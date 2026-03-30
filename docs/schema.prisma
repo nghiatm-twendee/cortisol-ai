@@ -1,0 +1,4215 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ===== USER MANAGEMENT =====
+model User {
+  id                 String     @id @default(cuid())
+  email              String     @unique
+  username           String     @unique
+  password           String
+  firstName          String?
+  lastName           String?
+  avatar             String?
+  phone              String?
+  status             UserStatus @default(ACTIVE)
+  deleted            Boolean    @default(false)
+  role               String? // Auto-synced colon-separated roles with scopes (e.g., "admin:global:hr-manager:department-hr")
+  specialPermissions Json? // examp {"viewContract":true,"addContract":false, "editContract":true,"menu_access_employees":true,"group_menu_hr":true}
+
+  emailNotiActive Boolean @default(true)
+
+  processId String? // Process ID for workflow management
+  // Relations
+  profile   EmployeeProfile?
+
+  // File Management Relations
+  uploadedFiles  File[]   @relation("FileUploader") // Files uploaded by this user
+  createdFolders Folder[] @relation("FolderCreator") // Folders created by this user
+
+  // RBAC Relations
+  // roleAssignments UserRoleAssignment[] //todo: remove
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  processUsers            ProcessUser[]
+  TimeApplicationApproval TimeApplicationApproval[]
+  PayrollSummary          PayrollSummary[]
+  VoucherApproval         VoucherApproval[]
+  Voucher                 Voucher[]                 @relation("VoucherCreator")
+  // PurchaseWorkflowApproval PurchaseWorkflowApproval[]
+  StepAssignee            ProcessStep[]             @relation("StepAssignee")
+  StepCompleter           ProcessStep[]             @relation("StepCompleter")
+  SettlementForm          SettlementForm[]
+  Process                 Process[]                 @relation("ProcessCreator")
+  ShiftSchedule           ShiftSchedule[]
+
+  // Link to other system
+  links UserLink[]
+
+  // Comments
+  comments        Comment[]
+  commentMention  CommentMention[]
+  commentReaction CommentReaction[]
+  refreshTokens   RefreshToken[]
+  activityLogs    ActivityLog[]
+
+  entityAuditLogs EntityAuditLog[] @relation("EntityAuditor")
+
+  // Sourcing Candidates Relations
+  sourcing_candidates sourcing_candidate[] @relation("CandidateOwner")
+  createdCandidates   sourcing_candidate[] @relation("CandidateCreator")
+
+  // Candidate Owner Change Request Relations
+  ownerChangeRequestsFrom CandidateOwnerChangeRequest[] @relation("FromOwner")
+  ownerChangeRequestsTo   CandidateOwnerChangeRequest[] @relation("ToOwner")
+
+  receivedAlerts EvaluationAlert[] @relation("AlertRecipient")
+
+  createdEvaluationActions EvaluationAction[] @relation("ActionCreator")
+
+  // Recruitment Deal Relations
+  createdDeals         RecruitmentDeal[]         @relation("DealCreator")
+  submittedCandidates  DealCandidateSubmission[] @relation("CandidateSubmitter")
+  submissionStatusLogs SubmissionStatusLog[]     @relation("StatusLogPerformer")
+  dealHistories        DealHistory[]             @relation("DealHistoryCreator")
+  dealAuditLogs        DealAuditLog[]            @relation("DealAuditor")
+
+  recruitmentDealFollowers RecruitmentDeal[] @relation("UserRecruitmentDealFollower")
+
+  competencyAssessments CompetencyAssessment[] @relation("CompetencyAssessor")
+
+  // CRM Relations
+  createdCrmCompanies  CrmCompany[]          @relation("CrmCompanyCreator")
+  createdCrmLeads      CrmLead[]             @relation("CrmLeadCreator")
+  createdCrmDeals      CrmDeal[]             @relation("CrmDealCreator")
+  crmDealFollowers     CrmDealFollower[]     @relation("CrmDealFollower")
+  createdCrmFollowUps  CrmFollowUp[]         @relation("CrmFollowUpCreator")
+  crmFollowUpFollowers CrmFollowUpFollower[] @relation("CrmFollowUpFollower")
+  createdCrmComments   CrmComment[]          @relation("CrmCommentCreator")
+  crmNotifications     CrmNotification[]     @relation("CrmNotificationRecipient")
+
+  @@map("users")
+}
+
+enum UserStatus {
+  TEMPORARY // Temporary users, e.g., for onboarding
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+enum UserRole {
+  MANAGEMENT
+  EMPLOYEE
+  PM
+  HR
+  ACCOUNTING
+  ACCOUNTING_HR
+  BOD
+  ADMIN
+  SALES // ✅ NEW - Sales role
+}
+
+model RefreshToken {
+  id         String  @id @default(cuid())
+  token      String  @unique
+  deviceId   String? // e.g., UUID of the device
+  deviceType String? // e.g., "iOS", "Android", "Web"
+  ipAddress  String?
+
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+}
+
+// ===== USER LINK =====
+model UserLink {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Enum cho hệ thống ngoài
+  externalSystem   ExternalSystem
+  externalUserId   String
+  externalUsername String?
+  metadata         Json?
+  active           Boolean        @default(true)
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@unique([externalSystem, userId, externalUserId])
+  @@index([userId])
+  @@index([externalSystem])
+}
+
+enum ExternalSystem {
+  PORTAL_OUTSOURCING
+  TELEGRAM
+  JIRA
+  GOOGLE_CALENDAR
+}
+
+// ===== CATEGORIES =====
+enum CategoryType {
+  DEPARTMENT // Phòng ban
+  POSITION // Vị trí
+  JOB_TITLE // Chức vụ
+  WORKPLACE // Nơi làm việc
+  // LABOR_TYPE // Loại lao động
+  // MILITARY_SERVICE // Nghĩa vụ quân sự
+  // MARITAL_STATUS // Tình trạng hôn nhân
+  // PASSPORT_TYPE // Loại hộ chiếu
+  BANK // Ngân hàng
+  LEVEL // Cấp bậc:  fresher, intern, Junior (có-không có eng), mid và senior (same)
+  FAMILY_RELATIONSHIP // Mối quan hệ gia đình
+  EDUCATION_TYPE // Hình thức đào tạo: chính quy, tại chức, từ xa
+  INSURANCE_BENEFIT_TYPE // Loại chế độ bảo hiểm
+  RECEIPT_PARTNER_VOUCHER // Đối tác (cho phiếu chi/thu)
+  PAYMENT_PARTNER_VOUCHER // Đối tác (cho phiếu chi/thu)
+  OFFBOARDING_CHECKLIST // checklist offboarding
+  OFFBOARDING_REASON // lý do offboarding
+  FAMILY_DOCUMENT_TYPE // Số/Loại giấy tờ: (1 Sổ hộ khẩu, 2 Sổ tạm trú, 3 Giấy tạm trú, 4 Sổ UBND, 5 Khác)
+  EXPENSE_CATEGORY // Danh mục khoản mục chi
+  EXPENSE_OBJECT // Danh mục đối tượng chi
+  REVENUE_CATEGORY // Danh mục khoản mục thu
+  REVENUE_OBJECT // Danh mục đối tượng thu
+
+  // ===== TECH =====
+  TECH_GROUP // Nhóm tech stack
+  TECH_SKILL // Kỹ năng cụ thể
+  PROJECT_POSITION // Vị trí dự án
+
+  COUNTRY // Quốc gia
+  DOMAIN // Lĩnh vực hoạt động của công ty/deal
+}
+
+model Category {
+  id          String       @id @default(cuid())
+  name        String
+  code        String
+  parentId    String? // Parent category ID for hierarchical categories
+  type        CategoryType // Loại danh mục
+  description String? // Mô tả
+  isActive    Boolean      @default(true) // Trạng thái hoạt động
+  orderIndex  Int? // Thứ tự hiển thị
+
+  deleted   Boolean  @default(false)
+  createdBy String? // Người tạo
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([type, code])
+  @@map("categories")
+}
+
+// ===== EMPLOYEE PROFILE =====
+model EmployeeProfile {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // 1. Thông tin cá nhân
+  employeeCode         String            @unique // Mã nhân sự (tự nhảy)
+  attendanceCode       String? // Mã chấm công (nhập tay sau khi đăng kí vân tay)
+  fullName             String? // user.firstName + user.lastName
+  birthDate            DateTime?
+  gender               Gender?
+  militaryService      MilitaryService? // nghĩa vụ quân sự
+  birthPlace           String? // Nơi sinh
+  hometown             String? // Nguyên quán
+  nationality          String? // Quốc tịch
+  maritalStatus        MaritalStatus?
+  ethnicity            String? // Dân tộc
+  religion             String? // Tôn giáo
+  personalTaxCode      String? // MST cá nhân
+  joinDate             DateTime? // Ngày vào
+  officialContractDate DateTime? // Ngày kí HĐLĐ chính thức
+  directManagerId      String? // Người QL trực tiếp
+  directManager        EmployeeProfile?  @relation("DirectManager", fields: [directManagerId], references: [id])
+  subordinates         EmployeeProfile[] @relation("DirectManager")
+  laborType            LaborType? // Loại lao động: In-house, CTV, vendor
+
+  supplierId String? // Nếu là vendor thì liên kết với vendor nào
+  supplier   Supplier? @relation(fields: [supplierId], references: [id])
+
+  // 2. Thông tin CMT/CC/CCCD/Hộ chiếu
+  citizenId           String?
+  citizenIdIssueDate  DateTime?
+  citizenIdIssuePlace String?
+  citizenIdFrontPhoto String? // URL ảnh CCCD mặt trước
+  citizenIdBackPhoto  String? // URL ảnh CCCD mặt sau
+  passportType        PassportType?
+  passportNumber      String?
+  passportIssueDate   DateTime?
+  passportExpiryDate  DateTime?
+  passportIssuePlace  String?
+  passportPhoto       String? // URL ảnh hộ chiếu
+
+  // 3. Thông tin ngân hàng
+  bankAccount     String?
+  bankAccountName String?
+  bankCode        String? // code for category with type BANK
+  bankName        String?
+  bankBranch      String?
+
+  // 4. Thông tin liên hệ
+  phone            String?
+  personalEmail    String? // Email cá nhân
+  permanentAddress String? // Thường trú
+  currentAddress   String? // Chỗ ở hiện nay
+
+  // Start: Contract info
+  // Temporary for onboarding process to use for contract signing
+  // Work info
+  department String? // Phòng ban: category with type DEPARTMENT
+  position   String? // Vị trí: category with type POSITION
+  jobTitle   String? // chức vụ: category with type JOB_TITLE
+  level      String? // cấp bậc: category with type LEVEL
+  // workplace    String? // nơi làm việc
+  // workingHours String? // giờ làm việc
+
+  // Salary info
+  // basicSalary Float? // Lương cơ bản todo:remove
+  // End: Contract info
+  hireDate DateTime? // Ngày vào làm
+
+  // Profile photo
+  profilePhoto String? // Ảnh đại diện
+
+  // Relations
+  familyMembers     FamilyMember[]
+  educationHistory  EducationHistory[]
+  workExperience    WorkExperience[]
+  certificates      Certificate[]
+  contracts         Contract[]
+  insuranceInfo     InsuranceInfo?
+  healthRecords     HealthRecord[]
+  // attachments       EmployeeAttachment[] // todo: remove
+  // other
+  probationDuration String? // Thời gian thử việc
+
+  vehicleNumber String? // Biển số xe
+  vehicleInfo   String? // Loại xe/Màu xe
+
+  deleted Boolean @default(false)
+
+  createdAt                DateTime                   @default(now())
+  updatedAt                DateTime                   @updatedAt
+  InsuranceHistory         InsuranceHistory[]
+  BenefitHistory           BenefitHistory[]
+  DailyAttendanceRecord    DailyAttendanceRecord[]
+  MonthlyAttendanceSummary MonthlyAttendanceSummary[]
+  TimeApplication          TimeApplication[]
+  AttendanceTimeSegment    AttendanceTimeSegment[]
+  leaveBalances            LeaveBalance[]
+  emergencyContact         EmergencyContact?
+  PayrollEmployee          PayrollEmployee[]
+  OffboardingWorkflow      OffboardingWorkflow[]
+  ShiftAssignment          ShiftAssignment[]
+  VoucherDetail            VoucherDetail[]
+
+  // Project relations
+  projectMembers         ProjectMember[] @relation("EmployeeProjectMembership")
+  followerProjectMembers ProjectMember[] @relation("EmployeeProjectMemberFollower")
+  projects               Project[]       @relation("FollowerProject")
+  clientFlowerProjects   Project[]       @relation("ClientFollowerProject")
+
+  // Candidate project follower relations
+  followerCandidateProjects CandidateProject[] @relation("EmployeeCandidateProjectFollower")
+
+  // Recruitment deal submissions (when employee is submitted to deal)
+  dealSubmissions DealCandidateSubmission[]
+
+  // NEW: Relations cho đánh giá
+  evaluations ProjectEvaluation[] @relation("Evaluator") // Người thực hiện đánh giá
+  evaluatedIn EvaluationMember[]  @relation("EvaluatedEmployee")
+
+  // Action notifications
+  assignedActions EvaluationActionAssignee[] @relation("ActionAssignee") // Action được giao
+
+  competencyAssessments CompetencyAssessment[]
+
+  // createdActions  EvaluationActionNotification[] @relation("ActionCreator") // Action đã tạo
+  @@map("employee_profiles")
+}
+
+enum MilitaryService {
+  COMPLETED // đã đi
+  NOT_YET // chưa đi
+  EXEMPT // không phải đi
+}
+
+enum MaritalStatus {
+  SINGLE // độc thân
+  MARRIED // kết hôn
+  DIVORCED // ly hôn
+}
+
+enum LaborType {
+  IN_HOUSE // In-house
+  CONTRACTOR // CTV
+  VENDOR // vendor
+}
+
+enum PassportType {
+  ORDINARY // phổ thông
+  OFFICIAL // công vụ
+  DIPLOMATIC // ngoại giao
+}
+
+// 5. Thông tin gia đình, người phụ thuộc
+model FamilyMember {
+  id         String          @id @default(cuid())
+  employeeId String
+  employee   EmployeeProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  relationship        String // Mối quan hệ: Category with type FAMILY_RELATIONSHIP
+  fullName            String
+  birthDate           DateTime?
+  phone               String?
+  citizenId           String?
+  citizenIdIssueDate  DateTime?
+  citizenIdIssuePlace String?
+  isDependent         Boolean   @default(false) // Phụ thuộc
+  dependentFromDate   DateTime?
+  dependentToDate     DateTime?
+  taxCode             String?
+  notes               String?
+  isEmergency         Boolean   @default(false) // Liên hệ khẩn cấp
+
+  // ====== Bổ sung theo yêu cầu ======
+  nationality      String? // Quốc tịch
+  ethnicity        String? // Dân tộc
+  birthAddress     String? // Địa chỉ khai sinh (Thôn/xóm/tổ - Xã/Phường - Tỉnh/TP)
+  householdAddress String? // Địa chỉ hộ khẩu (Thôn/xóm/tổ - Xã/Phường - Tỉnh/TP)
+
+  documentType String? // Category with type FAMILY_DOCUMENT_TYPE. Số/Loại giấy tờ: (1 Sổ hộ khẩu, 2 Sổ tạm trú, 3 Giấy tạm trú, 4 Sổ UBND, 5 Khác)
+  // householdRelation String? // Quan hệ với chủ hộ (00 chủ hộ, 01 Vợ, 02 Chồng, 03 Bố, ...)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("family_members")
+}
+
+model EmergencyContact {
+  id         String          @id @default(cuid())
+  employeeId String          @unique
+  employee   EmployeeProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  relationship String? // Mối quan hệ: Category with type FAMILY_RELATIONSHIP
+  fullName     String?
+  phone        String?
+  notes        String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("emergency_contacts")
+}
+
+// 6. Quá trình học tập
+model EducationHistory {
+  id         String          @id @default(cuid())
+  employeeId String
+  employee   EmployeeProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  fromDate      DateTime?
+  toDate        DateTime?
+  educationType String? // Hình thức đào tạo: Category with type EDUCATION_TYPE
+  major         String? // Chuyên ngành
+  degree        String? // Trình độ
+  institution   String? // Nơi đào tạo
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("education_history")
+}
+
+// 8. Kinh nghiệm làm việc
+model WorkExperience {
+  id         String          @id @default(cuid())
+  employeeId String
+  employee   EmployeeProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  fromMonth      Int
+  fromYear       Int
+  toMonth        Int
+  toYear         Int
+  company        String
+  position       String
+  reference      String? // Người tham chiếu
+  referencePhone String?
+  jobDescription String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("work_experience")
+}
+
+// 9. Chứng chỉ
+model Certificate {
+  id         String          @id @default(cuid())
+  employeeId String
+  employee   EmployeeProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  certificateNumber   String
+  issuingOrganization String
+  certificateType     String
+  version             String?
+  issueNumber         String?
+  validFrom           DateTime
+  validTo             DateTime?
+  attachment          String? // File đính kèm
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("certificates")
+}
+
+// ===== BẢO HIỂM =====
+enum InsuranceStatus {
+  ACTIVE // Đang tham gia
+  FINALIZED // Đã chốt
+  UNFINALIZED // Chưa chốt
+  NO_BOOK // Chưa có sổ
+}
+
+model InsuranceInfo {
+  id         String          @id @default(cuid())
+  employeeId String          @unique
+  employee   EmployeeProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  // 1. Thông tin bảo hiểm
+  insuranceBookNumber String? // Số sổ bảo hiểm
+  bookStatus          InsuranceStatus? @default(UNFINALIZED) // Trạng thái sổ :  Đang tham gia, Chưa tham gia, Đã báo giảm
+  unfinalizedReason   String? // Lý do chưa chốt sổ
+  payingEntity        String? // Pháp nhân đóng
+  healthInsuranceCard String? // Số thẻ BHYT
+  provinceCode        String? // Mã tỉnh cấp
+  healthcareProvider  String? // ĐK khám chữa bệnh
+
+  // 2. Nghiệp vụ báo tăng
+  profileCompletedDate  DateTime? // Nhân viên hoàn thiện hồ sơ
+  healthCardReceiveDate DateTime? // Ngày nhận thẻ y tế
+  healthCardReturnDate  DateTime? // Ngày trả thẻ y tế
+
+  // 3. Nghiệp vụ báo giảm
+  insuranceBookReceiveDate DateTime? // Ngày nhận sổ BH từ NLĐ
+  profileFinalizedDate     DateTime? // Nhân sự hoàn thiện hồ sơ
+  finalBookReceiveDate     DateTime? // Ngày nhận sổ BH đã chốt
+  bookReturnToEmployeeDate DateTime? // Ngày trả sổ cho NLĐ
+
+  // Relations
+  // insuranceHistory InsuranceHistory[]
+  // benefitHistory   BenefitHistory[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("insurance_info")
+}
+
+// 4. Lịch sử đóng bảo hiểm
+// enums cho dropdown
+enum InsuranceType {
+  MANDATORY // Bắt buộc
+  VOLUNTARY // Tự nguyện
+  NOT_PARTICIPATING // Không tham gia
+}
+
+model InsuranceHistory {
+  id         String          @id @default(cuid())
+  // insuranceInfoId String
+  // insuranceInfo   InsuranceInfo @relation(fields: [insuranceInfoId], references: [id], onDelete: Cascade)
+  employeeId String
+  employee   EmployeeProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  fromMonth      Int
+  fromYear       Int
+  toMonth        Int?
+  toYear         Int?
+  type           InsuranceType // Hình thức
+  reason         String? // Lý do
+  payingEntity   String? // Pháp nhân
+  insuranceLevel Float? // Mức đóng bảo hiểm
+  companyPaid    Float? // Cty đóng
+  employeePaid   Float? // người LĐ đóng
+  notes          String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("insurance_history")
+}
+
+// 5. Lịch sử giải quyết chế độ
+model BenefitHistory {
+  id         String          @id @default(cuid())
+  // insuranceInfoId String
+  // insuranceInfo   InsuranceInfo @relation(fields: [insuranceInfoId], references: [id], onDelete: Cascade)
+  employeeId String
+  employee   EmployeeProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  benefitType                 String // Loại chế độ: Category with type INSURANCE_BENEFIT_TYPE
+  applicationReceiveDate      DateTime? // Ngày nhận hồ sơ
+  procedureCompleteDate       DateTime? // Ngày hoàn thiện thủ tục
+  insurancePaymentReceiveDate DateTime? // Ngày nhận tiền BH trả
+  benefitPaymentDate          DateTime? // Ngày trả chế độ
+  amount                      Float? // Số tiền
+  notes                       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("benefit_history")
+}
+
+// ===== SỨC KHỎE =====
+model HealthRecord {
+  id         String          @id @default(cuid())
+  employeeId String
+  employee   EmployeeProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  checkupDate  DateTime
+  healthStatus String?
+  notes        String?
+  attachment   String? // File import khi khám sức khỏe định kì
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("health_records")
+}
+
+// ===== PHÂN CA VÀ CHẤM CÔNG =====
+
+// Cài đặt ca làm việc
+model WorkShift {
+  id String @id @default(cuid())
+
+  shiftCode              String  @unique // Mã ca
+  shiftName              String // Tên ca
+  // shiftType             ShiftType // Loại ca
+  startTime              String // Giờ bắt đầu (format HH:mm)
+  endTime                String // Giờ kết thúc (format HH:mm)
+  breakStartTime         String // Giờ bắt đầu (format HH:mm)
+  breakEndTime           String // Giờ kết thúc (format HH:mm)
+  autoAttendanceEnabled  Boolean @default(false)
+  totalWorkingHours      Float? // Tổng giờ làm việc
+  totalWorkingDays       Float? // Tổng công làm việc của ca này
+  allowEarlyLeaveMinutes Float? // ví dụ 60 hay 120
+
+  isActive Boolean @default(true)
+
+  // Relations
+  shiftAssignments ShiftAssignment[]
+  // timeAttendance   TimeAttendance[]
+
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
+  dailyAttendanceRecord DailyAttendanceRecord[]
+  AttendanceTimeSegment AttendanceTimeSegment[]
+
+  @@map("work_shifts")
+}
+
+enum ShiftType {
+  ADMINISTRATIVE // hành chính
+  PART_TIME // part time
+  REMOTE // remote
+  FAMILY_ADMIN // hành chính gia đình
+}
+
+// Phân ca
+model ShiftSchedule {
+  id String @id @default(cuid())
+
+  title        String // Tiêu đề
+  scheduleType ScheduleType // Kiểu phân ca
+  // shiftType    ShiftType // Loại ca //todo remove
+  approverId   String? // Người duyệt
+  approver     User?        @relation(fields: [approverId], references: [id])
+  comments     String?
+
+  // Lặp lại
+  repeatType RepeatType // Loại lặp
+  // repeatDays String? // Ngày lặp (JSON array)// todo: remove
+  fromDate   DateTime? // Từ ngày
+  toDate     DateTime? // Đến ngày
+
+  uploadFile String[] // File upload
+
+  status   ScheduleStatus @default(PENDING)
+  isActive Boolean        @default(true) // Trạng thái hoạt động
+
+  // Relations
+  assignments ShiftAssignment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("shift_schedules")
+}
+
+enum ScheduleType {
+  DEPARTMENT // phòng ban
+  INDIVIDUAL // cá nhân
+}
+
+enum RepeatType {
+  DAILY // theo ngày
+  WEEKLY // theo tuần
+  DATE_RANGE // theo khoảng ngày
+  SPECIFIC_DATES // những ngày cụ thể
+}
+
+enum ScheduleStatus {
+  PENDING // chờ duyệt
+  APPROVED // đã duyệt
+  REJECTED // từ chối
+}
+
+// Chi tiết phân ca
+model ShiftAssignment {
+  id String @id @default(cuid())
+
+  scheduleId String
+  schedule   ShiftSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  employeeId     String?
+  employee       EmployeeProfile? @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+  departmentCode String?
+
+  shiftId String
+  shift   WorkShift @relation(fields: [shiftId], references: [id])
+
+  assignDate DateTime? // Ngày phân ca DAILY,DATE_RANGE, SPECIFIC_DATES
+  dayOfWeek  Int? // Thứ (2-8, CN=8) => 0-6 by javascript
+
+  @@unique([scheduleId, employeeId, departmentCode, assignDate])
+  @@map("shift_assignments")
+}
+
+// ===== NGÀY NGHỈ =====
+model Holiday {
+  id String @id @default(cuid())
+
+  reason      String // lý do nghỉ
+  holidayType HolidayType // Loại nghỉ
+
+  // Relations
+  holidayDates HolidayDate[]
+
+  createdBy String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("holidays")
+}
+
+enum HolidayType {
+  NATIONAL // nghỉ lễ
+  EVENT // nghỉ sự kiện
+  COMPENSATORY // nghỉ bù
+  IRREGULAR // nghỉ bất thường
+}
+
+model HolidayDate {
+  id String @id @default(cuid())
+
+  holidayId String
+  holiday   Holiday @relation(fields: [holidayId], references: [id], onDelete: Cascade)
+
+  holidayDate DateTime // Ngày nghỉ
+  startTime   String? // Bắt đầu giờ (cho sự kiện/bất thường)
+  endTime     String? // Kết thúc giờ (cho sự kiện/bất thường)
+  isPaid      Boolean  @default(true) // Tính công
+  isRecurring Boolean  @default(false) // Lặp hàng năm (cho nghỉ lễ)
+
+  // Áp dụng cho
+  departments String[] // Phòng ban
+  positions   String[] // Vị trí
+  jobTitles   String[] // Chức vụ
+
+  @@map("holiday_dates")
+}
+
+// Bảng tổng hợp phép
+model LeaveBalance {
+  id String @id @default(cuid())
+
+  employeeId String
+  year       Int
+
+  // Tổng phép
+  totalLeave   Float // tổng: annualLeave + seniorityLeave + accumulatedTotal
+  usedLeave    Float // đã sử dụng
+  expiredLeave Float @default(0) // hết hạn: Phép luy kế hết hạn= accumulatedTotal - accumulatedUsed được tính sau khi hết hạn
+  // remainingLeave Float // tồn cuối: tính toán từ tổng - đã sử dụng - hết hạn
+
+  // Phép ứng
+  // advanceLeave Float
+
+  // Phép lũy kế
+  accumulatedTotal         Float     @default(0) // tổng nêu = migratedaccumulatedTotal>0  ? migratedaccumulatedTotal :  tính từ số dư năm trước
+  accumulatedUsed          Float     @default(0) // sử dụng migratedAccumulatedUsed + tính từ đơn từ
+  // accumulatedExpired     Float // hết hạn
+  accumulatedExpiredDate   DateTime? // ngày hết hạn: mặc định 32/03/year của năm đó
+  // accumulatedRemaining   Float // tồn cuối : tính toán từ tổng - đã sử dụng
+  migratedAccumulatedTotal Float     @default(0) // tổng phép lũy kế tinh dựa vào migrate
+  migratedAccumulatedUsed  Float     @default(0) // đã dùng phép lũy kế trước khi migrate
+
+  // Phép thâm niên
+  seniorityLeave        Float @default(0) // hiện tại
+  seniorityUsed         Float @default(0) // sử dụng migratedSeniorityUsed + tính từ đơn từ
+  // seniorityRemaining Float @default(0) // tồn cuối : tính toán từ tổng - đã sử dụng
+  migratedSeniorityUsed Float @default(0) // đã dùng phép thâm niên trước khi migrate
+
+  // Phép năm
+  annualLeave        Float @default(0) // tổng
+  annualUsed         Float @default(0) // sử dụng migratedAnnualUsed + tính từ đơn từ
+  // annualRemaining Float // tồn cuối được tính toán từ tổng - đã sử dụng
+  migratedAnnualUsed Float @default(0) // đã dùng phép năm trước khi migrate
+
+  // Ghi chú / thông tin migrate
+  migratedAt   DateTime?
+  migratedNote String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  employee EmployeeProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, year])
+  @@map("leave_balances")
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+// ===== HỢP ĐỒNG =====
+model Contract {
+  id         String          @id @default(cuid())
+  employeeId String
+  employee   EmployeeProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  // 1. Thông tin chung
+  contractCode        String       @unique // mã hợp đồng
+  contractType        ContractType // loại hợp đồng
+  department          String? // Phòng ban: category with type DEPARTMENT
+  position            String? // Vị trí: category with type POSITION
+  jobTitle            String? // chức vụ: category with type JOB_TITLE
+  level               String? // cấp bậc: category with type LEVEL
+  workplace           String? // nơi làm việc
+  workingForm         WorkingForm // hình thức làm việc
+  validFrom           DateTime // Hiệu lực từ ngày
+  validTo             DateTime? // đến ngày
+  signDate            DateTime? // ngày kí
+  signedBy            String? // người kí
+  hasDigitalSignature Boolean      @default(false) // ký số
+
+  // 2. Lương và phụ cấp
+  salaryAllowances SalaryAllowance[]
+
+  status ContractStatus @default(EFFECTIVE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("contracts")
+}
+
+enum ContractType {
+  ONE_YEAR // lao động 1 năm
+  PROBATION // thử việc
+  INDEFINITE // vô thời hạn
+  UNDER_12_MONTHS // dưới 12 tháng
+  THREE_YEARS // 3 năm
+  CONTRACTOR // CTV
+  APPRENTICESHIP // học việc
+}
+
+enum WorkingForm {
+  FULL_TIME
+  PART_TIME
+  CONTRACTOR
+}
+
+enum ContractStatus {
+  // DRAFT // bản nháp todo: remove
+  EFFECTIVE // đang hiệu lực
+  NOT_EFFECTIVE // chưa hiệu lực todo: remove
+  TERMINATED // đã thanh lý
+  // EXPIRED // hết hạn : todo remove
+  CANCELLED // Bị hủy bỏ (chưa từng có hiệu lực, khác với terminated)
+}
+
+model SalaryAllowance {
+  id         String   @id @default(cuid())
+  contractId String
+  contract   Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  salaryType  SalaryType @default(BASIC_SALARY) // enum
+  fromDate    DateTime // từ ngày
+  toDate      DateTime? // từ ngày
+  notes       String?
+  salaryForm  String? // hình thức lương
+  amount      Float // số tiền
+  description String? // mô tả
+  attachment  String? // đính kèm
+
+  isActive  Boolean  @default(true) // Trạng thái hoạt động
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("salary_allowances")
+}
+
+enum SalaryType {
+  BASIC_SALARY // Lương cơ bản
+  ALLOWANCE // Phụ cấp
+  // BONUS // Thưởng
+  // OVERTIME // Làm thêm giờ
+  // OTHER // Khác
+}
+
+// ===== REQUESTS SYSTEM =====
+
+enum RequestStatus {
+  PENDING
+  IN_PROGRESS
+  APPROVED
+  REJECTED
+  COMPLETED
+  CANCELLED
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+// ===== LEAVE MANAGEMENT =====
+model TimeApplication {
+  id              String           @id @default(cuid())
+  employeeId      String
+  type            ApplicationType
+  leaveType       String? // Mã loại nghỉ: LeaveTypeConfig with code use with applicationType LEAVE
+  leaveTypeConfig LeaveTypeConfig? @relation(fields: [leaveType], references: [code], onDelete: NoAction)
+
+  reason            String? // with OFFBOARDING use from Category with type OFFBOARDING_REASON
+  description       String?
+  attachmentFileIds String[] // File URLs
+
+  // status       AppStatus        @default(PENDING)
+  status RequestStatus @default(PENDING)
+
+  waitUpdate Boolean @default(false) // true trong trường hợp đơn từ bị revert về nhân viên để chỉnh sửa
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  employee                EmployeeProfile           @relation(fields: [employeeId], references: [id])
+  ot                      OvertimeApplication[]
+  checkin                 CheckinApplication[]
+  leaveDate               LeaveDate[]
+  TimeApplicationApproval TimeApplicationApproval[]
+  ApplicationRelation     ApplicationRelation[]
+  OffboardingApplication  OffboardingApplication?
+  BusinessTripApplication BusinessTripApplication?
+  AttendanceTimeSegment   AttendanceTimeSegment[]
+
+  @@map("time_applications")
+}
+
+model TimeApplicationApproval {
+  id                String          @id @default(cuid())
+  timeApplicationId String
+  timeApplication   TimeApplication @relation(fields: [timeApplicationId], references: [id], onDelete: Cascade)
+
+  approverId String
+  approver   User   @relation(fields: [approverId], references: [id])
+
+  status   ApprovalStatus @default(PENDING)
+  comments String?
+  index    Int            @default(0) // Thứ tự duyệt
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("time_application_approvals")
+}
+
+model ApplicationRelation {
+  id            String          @id @default(cuid())
+  applicationId String // ID của TimeApplication
+  application   TimeApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  relatedType RelatedObjectType // INVOICE, PROJECT, PROCESS...
+  relatedId   String // ID thực tế
+
+  description       String?
+  attachmentFileIds String[] // File ids
+  createdAt         DateTime @default(now())
+
+  @@unique([applicationId, relatedType, relatedId])
+  @@map("application_relations")
+}
+
+enum ApplicationType {
+  LEAVE
+  OVERTIME
+  CHECKIN
+  OFFBOARDING
+  BUSINESS_TRIP
+}
+
+model LeaveDate {
+  id            String          @id @default(cuid())
+  applicationId String // ID của TimeApplication
+  application   TimeApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  startTime DateTime?
+  endTime   DateTime?
+  days      Float? // Số ngày nghỉ caclculated from leaveDates
+
+  // use for ANNUAL_LEAVE
+  leaveBalanceBefore Float? // Số ngày phép còn lại trước khi nghỉ
+  leaveBalanceAfter  Float? // Số ngày phép còn lại sau khi nghỉ
+
+  @@map("leave_dates")
+}
+
+enum LeaveUnit {
+  DAY
+  WEEK
+  MONTH
+  YEAR
+}
+
+model OffboardingApplication {
+  id                String   @id @default(cuid())
+  timeApplicationId String   @unique
+  applicationDate   DateTime @default(now())
+  lastWorkingDate   DateTime
+  resignationDate   DateTime
+
+  timeApplication TimeApplication @relation(fields: [timeApplicationId], references: [id], onDelete: Cascade)
+
+  @@map("offboarding_applications")
+}
+
+model LeaveTypeConfig {
+  id          String    @id @default(cuid())
+  code        String    @unique // VD: "REMOTE_WOMAN", "SICK_CHILD"
+  name        String // VD: "Remote chế độ cho NV nữ"
+  description String? // Ghi chú mô tả
+  maxDays     Int? // Giới hạn tối đa (theo month/year)
+  unit        LeaveUnit // Enum: DAY, MONTH, YEAR
+  isPaid      Boolean // Nghỉ có lương không
+  genderOnly  Gender? // Enum: MALE, FEMALE, null
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  readOnly    Boolean   @default(false) // Không cho phép chỉnh sửa như ANNUAL_LEAVE
+
+  TimeApplication TimeApplication[]
+}
+
+// ===== OT =====
+model OvertimeApplication {
+  id                String   @id @default(cuid())
+  timeApplicationId String
+  otDate            DateTime
+  startTime         DateTime
+  endTime           DateTime
+  hours             Float? // Số giờ làm thêm
+  note              String? // Ghi chú
+
+  projectId String? // Dự án
+  project   JiraProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  timeApplication TimeApplication @relation(fields: [timeApplicationId], references: [id], onDelete: Cascade)
+
+  @@map("overtime_applications")
+}
+
+// ===== Checkin/checkout Application ====
+model CheckinApplication {
+  id                String   @id @default(cuid())
+  timeApplicationId String
+  checkTime         DateTime
+  timestampText     String // raw Ngày giờ dạng text (để hiển thị) yyyyMMddHHmm
+  reason            String?
+
+  timeApplication TimeApplication @relation(fields: [timeApplicationId], references: [id], onDelete: Cascade)
+
+  @@map("checkin_applications")
+}
+
+// ===== Business Trip Application =====
+model BusinessTripApplication {
+  id                String              @id @default(cuid())
+  timeApplicationId String              @unique
+  startTime         DateTime
+  endTime           DateTime
+  tripType          BusinessTripType // Hình thức: trong nước, nước ngoài, nội bộ
+  location          String? // Địa điểm công tác
+  reason            BusinessTripReason? // Lý do: hội thảo, khách hàng, công việc khác
+  transportMethod   TransportMethod? // Phương tiện: cá nhân, grab, etc.
+
+  timeApplication      TimeApplication       @relation(fields: [timeApplicationId], references: [id], onDelete: Cascade)
+  businessTripExpenses BusinessTripExpense[]
+
+  @@map("business_trip_applications")
+}
+
+enum BusinessTripType {
+  DOMESTIC // Trong nước
+  INTERNATIONAL // Nước ngoài
+  INTERNAL // Nội bộ
+}
+
+enum BusinessTripReason {
+  CONFERENCE // Hội thảo
+  CLIENT // Khách hàng
+  OTHER // Công việc khác
+}
+
+enum TransportMethod {
+  PERSONAL // Cá nhân
+  BOOKED // Đặt xe
+}
+
+model BusinessTripExpense {
+  id             String   @id @default(cuid())
+  businessTripId String
+  expenseType    String // Loại phụ phí: đi lại, ăn uống, chỗ ở
+  amount         Decimal  @db.Decimal(15, 2) // Số tiền
+  description    String? // Mô tả chi tiết
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  businessTripApplication BusinessTripApplication @relation(fields: [businessTripId], references: [id], onDelete: Cascade)
+
+  @@map("business_trip_expenses")
+}
+
+// ===== ATTENDANCE =====
+// Loại công
+model TimeCode {
+  id          String   @id @default(cuid())
+  code        String   @unique // Ví dụ: "NORMAL", "HOLIDAY", "OT", "LEAVE"
+  name        String // Ví dụ: "Công ngày thường", "Công ngày lễ", "Nghỉ phép"
+  isPaid      Boolean  @default(true) // Có tính lương
+  multiplier  Float    @default(1.0) // Hệ số nhân công (ví dụ: 2.0 cho ngày lễ)
+  description String? // Mô tả tùy chọn
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // AttendanceTimeSegment AttendanceTimeSegment[]
+  @@map("time_code")
+}
+
+model RawAttendanceLog {
+  id             String     @id @default(cuid())
+  deviceId       String? // ID của máy chấm công
+  attendanceCode String // Mã nhân viên từ máy (không phải UUID trong hệ thống)
+  timestamp      DateTime // Thời điểm quẹt thẻ/vân tay
+  timestampText  String // raw Ngày giờ dạng text (để hiển thị) yyyyMMddHHmm
+  direction      Direction? // IN hoặc OUT
+  rawData        String? // Dữ liệu thô từ thiết bị (nếu cần)
+  syncStatus     SyncStatus @default(PENDING) // Trạng thái xử lý dữ liệu
+  syncedAt       DateTime? // Thời điểm hệ thống xử lý xong log này
+  isManual       Boolean    @default(false) // tạo bằng tay hay tự động import từ máy chấm công
+
+  timeApplicationId String? // ID của đơn xin phép liên quan (nếu có)
+
+  attendanceRecordId String? // ID của bản ghi chấm công sẽ lưu trữ sau khi xử lý
+  attendanceRecord   DailyAttendanceRecord? @relation(fields: [attendanceRecordId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@unique([attendanceCode, deviceId, timestampText])
+  @@map("raw_attendance_log")
+}
+
+enum Direction {
+  IN
+  OUT
+}
+
+enum SyncStatus {
+  PENDING // Chưa xử lý
+  SYNCED // Đã xử lý thành công
+  ERROR // Gặp lỗi khi xử lý
+}
+
+model AttendanceTimeSegment {
+  id                 String                 @id @default(cuid())
+  attendanceRecordId String?
+  attendanceRecord   DailyAttendanceRecord? @relation(fields: [attendanceRecordId], references: [id])
+  employeeId         String
+  employee           EmployeeProfile        @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  shiftId String?
+  shift   WorkShift? @relation(fields: [shiftId], references: [id])
+
+  date     DateTime
+  dateText String // Ngày dạng text (để hiển thị) yyyyMMdd
+
+  startTime DateTime? // Thời điểm bắt đầu block công
+  endTime   DateTime? // Thời điểm kết thúc block công
+
+  timeCode String?
+  // timeCodeRef TimeCode? @relation(fields: [timeCode], references: [code])
+
+  timeApplicationId String?
+  timeApplication   TimeApplication? @relation(fields: [timeApplicationId], references: [id], onDelete: Cascade)
+
+  duration Float // Thời lượng tính công (giờ), = endTime - startTime (sau khi loại trừ nghỉ)
+  note     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("attendance_time_segment")
+}
+
+model DailyAttendanceRecord {
+  id         String          @id @default(cuid())
+  employeeId String
+  employee   EmployeeProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  shiftId String?
+  shift   WorkShift? @relation(fields: [shiftId], references: [id])
+
+  isWorkingDay Boolean @default(true)
+
+  date                 DateTime
+  dateText             String // Ngày dạng text (để hiển thị) yyyyMMdd
+  checkIn              DateTime?
+  checkOut             DateTime?
+  breakTime            Float? // in minutes
+  workHours            Float? // giờ làm việc thực tế tính công chuẩn(đã bao gồm nghỉ phép)
+  standardWorkingHours Float     @default(0) // Giờ chuẩn theo công ty
+  leavePaidHours       Float? // giờ nghỉ tính lương
+
+  overtime     Float? // in hours
+  status       AttendanceStatus @default(ABSENT)
+  location     String?
+  notes        String?
+  isLocked     Boolean          @default(false) // Đã chốt
+  timeCode     String? // Mã công (ví dụ: "NORMAL", "HOLIDAY", "OT")
+  timeCodeList String[]
+
+  // Audit fields for manual corrections
+  lastModifiedBy     String? // User ID người sửa cuối
+  lastModifiedReason String? // Lý do sửa đổi
+  lastModifiedAt     DateTime? // Thời gian sửa đổi cuối
+
+  lateMinutes       Float? // Số phút đi muộn
+  earlyLeaveMinutes Float? // Số phút về sớm
+  missedChecks      Int    @default(0) // Số lần quên chấm công
+
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
+  attendanceTimeSegment AttendanceTimeSegment[]
+  rawAttendanceLog      RawAttendanceLog[]
+
+  @@unique([employeeId, date])
+  @@map("daily_attendance_record")
+}
+
+model MonthlyAttendanceSummary {
+  id         String          @id @default(cuid())
+  employeeId String
+  employee   EmployeeProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  year  Int
+  month Int
+
+  // Ngày công sử dung để tính LƯƠNG CƠ BẢN
+  actualWorkingDays   Float @default(0) // Ngày công thực tế
+  standardWorkingDays Float @default(0) // Số công chuẩn
+
+  // GIỜ LÀM VIỆC
+  actualWorkingHours   Float @default(0) // Tổng giờ làm thực tế tính công chuẩn
+  standardWorkingHours Float @default(0) // Giờ chuẩn theo công ty
+
+  // GIỜ LÀM THÊM (phục vụ tính lương OT)
+  overtimeWeekdayHours Float @default(0) // Làm thêm ngày thường
+  overtimeWeekendHours Float @default(0) // Làm thêm ngày nghỉ
+  overtimeHolidayHours Float @default(0) // Làm thêm ngày lễ
+
+  //
+  totalPaidHours Float @default(0) // Tổng giờ làm thực tế tính công chuẩn + giờ làm thêm
+
+  // NGHỈ PHÉP
+  paidLeaveDays         Float @default(0) // Nghỉ có lương
+  unpaidLeaveDays       Float @default(0) // Nghỉ không lương
+  unexcusedLeaveDays    Float @default(0) // Nghỉ không lý do
+  // detail
+  annualLeaveDays       Float @default(0) // Nghỉ phép năm
+  remoteApplicationDays Float @default(0) // Remote days
+
+  // NGÀY ĐẶC BIỆT
+  holidayDays      Float @default(0) // Số ngày nghỉ lễ
+  businessTripDays Float @default(0) // Công tác
+
+  // TIỀN PHẠT
+  lateMinutes       Float? // Số phút đi muộn
+  earlyLeaveMinutes Float? // Số phút về sớm
+  missedChecks      Int    @default(0) // Số lần quên chấm công
+
+  penaltyLateAmount        Int @default(0) // Phạt đi muộn
+  penaltyEarlyLeaveAmount  Int @default(0) // Phạt về sớm
+  penaltyUnexcusedAmount   Int @default(0) // Phạt nghỉ không lý do
+  penaltyMissedCheckAmount Int @default(0) // Phạt quên chấm công
+  totalPenaltyAmount       Int @default(0) // Tổng phạt
+
+  // === Nghỉ phép - use for view ===
+  leaveDaysStart Float @default(0) // Số phép đầu kỳ
+  leaveDaysUsed  Float @default(0) // Số phép đã dùng trong kỳ
+  leaveDaysEnd   Float @default(0) // Số phép cuối kỳ
+
+  isLocked Boolean @default(false)
+  notes    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([employeeId, year, month])
+  @@map("monthly_attendance_summary")
+}
+
+enum AttendanceStatus {
+  PRESENT
+  PARTIAL
+  ABSENT
+  ON_LEAVE
+  LATE
+  EARLY_LEAVE
+  HALF_DAY
+}
+
+// ===== PAYROLL =====
+model PayrollSummary {
+  id String @id @default(cuid())
+
+  // Period Information
+  month Int
+  year  Int
+  // title String // Tên bảng lương
+
+  // Status
+  status            PayrollStatusEnum @default(DRAFT) // DRAFT => PROCESSING(kế toán gửi yc phê duyệt tự chuyển sang processing) => APPROVED,DISAPPROVED => PAID
+  comments          String?
+  disapprovedReason String? // Lý do không duyệt
+  approvedBy        String? // Người duyệt
+  approvedByUser    User?             @relation(fields: [approvedBy], references: [id]) // Người duyệt
+  approvedAt        DateTime? // Thời gian duyệt
+  // General
+  totalEmployees    Int               @default(0)
+
+  // Salary
+  totalGrossSalary Float @default(0) // Tổng lương (gross, trước khấu trừ)
+  totalNetSalary   Float @default(0) // Thực lĩnh nhân viên nhận (net)
+
+  // Trade Union
+  totalCompanyTradeUnionFee Float @default(0) // Kinh phí công đoàn (công ty đóng)
+
+  // Company Contributions (do công ty trả thêm)
+  totalCompanySocialInsurance Float @default(0) // BHXH Công ty (17.5%)
+  totalCompanyHealthInsurance Float @default(0) // BHYT Công ty (3%)
+  totalCompanyUnempInsurance  Float @default(0) // BHTN Công ty (1%)
+  totalCompanyContributions   Float @default(0) // Tổng cộng công ty đóng (BHXH+BHYT+BHTN+KPCĐ)
+
+  // Employee Contributions (trích từ lương nhân viên)
+  totalEmployeeSocialInsurance Float @default(0) // BHXH Nhân viên (8%)
+  totalEmployeeHealthInsurance Float @default(0) // BHYT Nhân viên (1.5%)
+  totalEmployeeUnempInsurance  Float @default(0) // BHTN Nhân viên (1%)
+  totalEmployeeContributions   Float @default(0) // Tổng cộng nhân viên trích
+
+  // Deductions
+  totalPersonalIncomeTax Float @default(0) // Thuế TNCN
+  totalSalaryAdvance     Float @default(0) // Tạm ứng
+  totalDeductions        Float @default(0) // Tổng trừ (Employee contrib + Tax + Advance)
+
+  // Company Expenses (chi phí thực tế công ty bỏ ra)
+  totalCompanyExpenses Float @default(0)
+  // = GrossSalary + CompanyContributions + TradeUnionFee
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  PayrollEmployee PayrollEmployee[]
+
+  @@unique([month, year])
+  @@map("payroll_summary")
+}
+
+model PayrollEmployee {
+  id         String          @id @default(cuid())
+  employeeId String
+  employee   EmployeeProfile @relation(fields: [employeeId], references: [id])
+
+  month Int
+  year  Int
+
+  // Basic Information (A-F)
+  // stt           Int // STT - Số thứ tự
+  employeeCode  String // PERSONNEL_CODE - Mã nhân sự
+  fullName      String // PERSONNEL_NAME - Họ tên
+  jobTitle      String? // JOB_TITLE - Chức vụ
+  contractType  String // CONTRACT_TYPE - Loại hợp đồng
+  contractTitle String? // CONTRACT_TITLE - Tên hợp đồng
+
+  // Salary Base (G-J)
+  basicSalary         Float // LUONG_DONG_BH - Lương cơ bản - Lấy từ số liệu tháng trước, kế toán có thể sửa
+  standardWorkingDays Float // NUMBER_WORKDAY - Số công chuẩn
+  salaryTypeNet       Float // SALARY_TYPE_NET - Thu nhập theo lương - Lấy từ số liệu tháng trước, kế toán có thể sửa
+  salaryActualNet     Float // TN_TL - Thu nhập theo lương thực
+
+  // Attendance (K)
+  actualWorkingDays Float // CAL_WORKDAY - Ngày công thực tế
+  // leaveDays         Float @default(0) // LEAVE_DAYS - Số ngày nghỉ phép
+
+  // Allowances (L-R)
+  allowanceTransport       Float @default(0) // SALARY_ALLOW_6 - Phụ cấp xăng xe - Lấy từ số liệu tháng trước, kế toán có thể sửa
+  allowanceTransportActual Float @default(0) // PC_XX - Phụ cấp xăng xe thực
+  allowanceDegree          Float @default(0) // SALARY_ALLOW_8 - Phụ cấp bằng cấp - lấy từ tháng trước, có thể sửa
+  allowanceLunch           Float @default(0) // SALARY_ALLOW_1 - Phụ cấp ăn trưa
+  allowanceLunchActual     Float @default(0) // PC_AT - Phụ cấp ăn trưa thực - lấy từ tháng trước, có thể sửa
+  allowancePhone           Float @default(0) // PC_DT - Phụ cấp điện thoại
+  salaryActual             Float @default(0) // SALARY_TT - Lương thực tế - chua bao gồm phụ cấp TN_TL * (CAL_WORKDAY / NUMBER_WORKDAY)
+
+  // Overtime (S-X)
+  overtimeRegularHours  Float @default(0) // LT_NT - Tổng giờ làm thêm ngày thường
+  overtimeRegularAmount Float @default(0) // LUONG_LT_NT - Tiền tăng ca ngày thường
+  overtimeWeekendHours  Float @default(0) // LTNN - Tổng giờ làm thêm ngày nghỉ
+  overtimeWeekendAmount Float @default(0) // LUONG_LT_NN - Tiền tăng ca ngày nghỉ
+  overtimeHolidayHours  Float @default(0) // LT_NL - Tổng giờ làm thêm ngày lễ
+  overtimeHolidayAmount Float @default(0) // LUONG_LT_NL - Tiền tăng ca ngày lễ
+
+  // Bonuses (Y-AA)
+  bonus        Float @default(0) // BONUS - Bonus - Tự nhập
+  holidayBonus Float @default(0) // THUONG_LE - Thưởng lễ - Tự nhập
+  totalSalary  Float @default(0) // TONG_LUONG - Tổng lương : SALARY_TT+PC_XX+PC_AT+SALARY_ALLOW_8+PC_DT+LUONG_LT_NT+LUONG_LT_NN+LUONG_LT_NL+BONUS+THUONG_LE
+
+  // Company Contributions (AB-AF)
+  unionFee            Float @default(0) // KPCD - Kinh phí công đoàn: tự nhập
+  socialInsCompany    Float @default(0) // BHXH_CTY - Trích BHXH Công ty (17,5%)=LUONG_DONG_BH*0.175
+  healthInsCompany    Float @default(0) // BHYT_CTY - Trích BHYT Công ty (3%)
+  unemployInsCompany  Float @default(0) // BHTN_CTY - Trích BHTN Công ty (1%)
+  totalCompanyContrib Float @default(0) // CONG_CTY - Cộng trích Công ty: KPCD+BHXH_CTY+BHYT_CTY+BHTN_CTY
+
+  // Employee Deductions (AG-AJ)
+  socialInsEmployee   Float @default(0) // BHXH_NV - Trích BHXH Nhân viên (8%)=LUONG_DONG_BH*0.08
+  healthInsEmployee   Float @default(0) // BHYT_NV - Trích BHYT Nhân viên (1,5%)
+  unemployInsEmployee Float @default(0) // BHTN_NV - Trích BHTN Nhân viên (1%)
+  totalEmployeeDeduct Float @default(0) // CONG_NV - Cộng trích Nhân viên=BHXH_NV+BHYT_NV+BHTN_NV
+
+  // Taxes and Other Deductions (AK-AM)
+  personalIncomeTax Float @default(0) // THUE_TNCN - Thuế TNCN : tự nhập
+  advance           Float @default(0) // TAM_UNG - Tạm ứng - Tự nhập
+  totalDeductions   Float @default(0) // TONG_TRU - Tổng trừ=CONG_NV+THUE_TNCN+TAM_UNG
+
+  // Net Pay (AN)
+  netPay Float @default(0) // THUC_LINH - Thực lĩnh=TONG_LUONG-CONG_NV-THUE_TNCN-TAM_UNG
+
+  // Payment Methods (AO-AR)
+  paymentBankAccount Float @default(0) // TT_TK - Thanh toán tài khoản công ty: tự nhập
+  paymentCash        Float @default(0) // TT_TM - Thanh toán tài khoản tiền mặt: tự nhập
+  paymentOtBonus     Float @default(0) // TT_OT_THUONG - Thanh toán OT, Thưởng=THUC_LINH-TT_TK-TT_TM
+  paymentOtBonusCash Float @default(0) // TT_OT_THUONG_TM - Thanh toán OT, Thưởng tiền mặt=THUC_LINH-TT_TK-TT_TM-TT_OT_THUONG
+
+  // Bank Information (AS-AT)
+  bankAccount String? // BANK_ACCOUNT - Số tài khoản ngân hàng
+  bankName    String? // BANK_NAME - Tên ngân hàng
+
+  // Contract type ratio for calculation
+  contractTypeRatio Float @default(1.0) // Tỉ lệ theo loại hợp đồng
+
+  // Status and Processing
+  status                    PayrollStatusEnum @default(DRAFT) // DRAFT => EMPLOYEE_APPROVED => DISAPPROVED, APPROVED => PAYMENT_PROCESSING => PAID
+  employeeDisapprovedReason String? // Lý do trạng thái (nếu có)
+  disapprovedReason         String? // Lý do trạng thái (nếu có)
+  calculatedAt              DateTime?
+  approvedAt                DateTime?
+  processedAt               DateTime?
+  processedBy               String?
+  paidAt                    DateTime?
+  paidBy                    String?
+
+  // Split line handling (for contract type changes mid-month)
+  isSplitRecord  Boolean           @default(false)
+  parentRecordId String?
+  parentRecord   PayrollEmployee?  @relation("PayrollEmployeeSplit", fields: [parentRecordId], references: [id], onDelete: Cascade)
+  splitRecords   PayrollEmployee[] @relation("PayrollEmployeeSplit")
+
+  notes String?
+
+  changeFields String[] @default([]) // Fields that have been changed value by manual edit
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  PayrollSummary   PayrollSummary? @relation(fields: [payrollSummaryId], references: [id])
+  payrollSummaryId String?
+
+  @@unique([employeeId, month, year, isSplitRecord, contractType])
+  @@map("payroll_employee")
+}
+
+enum PayrollStatusEnum {
+  DRAFT
+  PROCESSING
+  EMPLOYEE_APPROVED
+  EMPLOYEE_DISAPPROVED
+  DISAPPROVED
+  APPROVED
+  PAYMENT_PROCESSING
+  PAID
+  CANCELLED
+}
+
+// ===== ACCOUNTING MODULE =====
+model Voucher {
+  id          String      @id @default(cuid())
+  code        String      @unique // Auto generate: PT_xxx / PC_xxx
+  voucherType VoucherType // RECEIPT / PAYMENT
+
+  issueDate   DateTime // Ngày thu/chi
+  postingDate DateTime // Ngày hạch toán (có thể bỏ nếu ko cần)
+
+  content String // Nội dung thu/chi
+  // contentCode String? // Mã nội dung thu/chi (gom nhóm)
+
+  accountId String? // Tài khoản thu/chi
+  account   MoneyAccount? @relation(fields: [accountId], references: [id])
+
+  partnerCode String? // đối tượng thu/chi (có thể bỏ nếu ko cần): Category with type   RECEIPT_PARTNER_VOUCHER / PAYMENT_PARTNER_VOUCHER
+
+  payerReceiver String? // Người nộp/nhận tiền
+  bankAccount   String? // Số tài khoản nộp/nhận
+  bankCode      String? // Ngân hàng nộp/nhận: Category with type BANK
+
+  // approverId String?
+  // approver   User?   @relation("VoucherApprover", fields: [approverId], references: [id])
+
+  note        String? // Ghi chú
+  attachments String[] // Đính kèm files ids
+
+  currency       String            @default("VND")
+  exchangeRate   Decimal?          @db.Decimal(18, 6) // Nếu có ngoại tệ
+  taxIncluded    Boolean           @default(false) // Có bao gồm thuế không
+  totalAmount    Decimal           @db.Decimal(18, 2) // Tổng tiền
+  details        VoucherDetail[]
+  relatedObjects VoucherRelation[]
+
+  status    VoucherStatusEnum @default(DRAFT)
+  approvals VoucherApproval[] // Quy trình duyệt
+
+  createdBy String?
+  creator   User?   @relation("VoucherCreator", fields: [createdBy], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // SettlementFormVoucherPayment SettlementFormVoucherPayment[]
+  // SettlementFormVoucherReceipt SettlementFormVoucherReceipt[]
+  @@map("voucher")
+}
+
+model VoucherDetail {
+  id        String  @id @default(cuid())
+  voucherId String
+  voucher   Voucher @relation(fields: [voucherId], references: [id], onDelete: Cascade)
+
+  description String // Diễn giải chi tiết lý do thu/chi
+  quantity    Int     @default(1) // Số lượng
+  amount      Decimal @db.Decimal(18, 2) // Số tiền
+  // currency        String  @default("VND") // Đơn vị tiền //todo: remove, use same in Voucher
+
+  expenseCategory String? // use Category EXPENSE_CATEGORY, REVENUE_CATEGORY
+  expenseObject   String? // use Category EXPENSE_OBJECT, REVENUE_OBJECT
+
+  employeeId String? //
+  employee   EmployeeProfile? @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  customerId String? // use for RECEIPT
+  customer   Customer? @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  supplierId String? // use for PAYMENT
+  supplier   Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+
+  taxRate     Decimal? @db.Decimal(5, 2) // % thuế (nếu có)
+  taxAmount   Decimal? @db.Decimal(18, 2) // Tiền thuế
+  totalAmount Decimal  @db.Decimal(18, 2) // Tổng cộng (amount + tax)
+
+  @@map("voucher_detail")
+}
+
+// Liên kết chứng từ với các đối tượng liên quan (hóa đơn, dự án, quy trình...)
+model Customer {
+  id      String  @id @default(cuid())
+  code    String  @unique // Mã KH
+  name    String // Tên KH, công ty
+  taxCode String? // MST (có hoặc không)
+  email   String? // Email
+
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  VoucherDetail VoucherDetail[]
+}
+
+// verdor = supplier
+model Supplier {
+  id              String    @id @default(cuid())
+  code            String    @unique // Mã NCC dạng text
+  name            String // Tên NCC dạng text
+  contractDate    DateTime? // Ngày ký HĐ
+  contractEndDate DateTime? // Ngày kết thúc HĐ
+  renewalDate     DateTime? // Ngày gia hạn mới
+  newEndDate      DateTime? // Ngày kết thúc mới
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // ==== Thông tin cơ bản ====
+  companySize    Int? // Quy mô (số nhân sự)
+  companyProfile String? // Profile / mô tả công ty
+  website        String? // Website nếu có
+
+  // ==== Đầu mối liên hệ ====
+  contactName  String? // Tên người liên hệ
+  contactTitle String? // Chức vụ
+  contactPhone String?
+  contactEmail String?
+
+  // ==== Trạng thái ====
+  status VendorStatus @default(ACTIVE) // Hoạt động / Không hoạt động
+
+  // ==== Hợp đồng ====
+  sourcingType SourcingType? // ODC / Fixed price / T&M
+
+  // ==== Năng lực kỹ thuật ====
+  domains    String? // Domain chính (CRM, Fintech, Healthcare...)
+  techStacks String? // Tech stack trọng điểm (Java, Spring, React...)
+
+  // ==== Nhân sự & ngoại ngữ ====
+  englishLevel   sourcing_candidate_language_level_enum? // Trình độ tiếng Anh trung bình
+  otherLanguages String? // Ngôn ngữ khác (JP, KR...)
+
+  // ==== Rate ====
+  offeredRate String? // Rate chào (USD/day hoặc USD/month)
+  averageRate String? // Rate trung bình
+
+  // ==== Audit ====
+
+  // ==== Relations ====
+  VoucherDetail   VoucherDetail[]
+  employeeProfile EmployeeProfile[]
+
+  sourcingCandidates sourcing_candidate[]
+}
+
+enum VendorStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum SourcingType {
+  ODC
+  FIXED_PRICE
+  TIME_MATERIAL
+}
+
+model MoneyAccount {
+  id          String  @id @default(cuid()) // Khóa chính
+  code        String  @unique // Mã tài khoản (VD: 111, 112, 131...) Bank acc number
+  name        String // Tên tài khoản (VD: Tiền mặt, Ngân hàng...) Bank acc name
+  description String? // Mô tả chi tiết (VD: "TK chi phí", "TK thuế, BHXH")
+  bank        String? // Tên ngân hàng (VD: "Kỹ Thương Việt Nam", "Tiền mặt")  Bank Name
+  // other fields
+  bankAddress String? // Bank address
+  iban        String? // IBAN
+  bic         String? // BIC
+  swiftCode   String? // Bank’s Swift Code
+  bankCode    String? // Bank’s Code
+  branchCode  String? // Branch Code
+
+  isActive  Boolean  @default(true) // Có được sử dụng không
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Liên kết với các voucher
+  voucher Voucher[]
+
+  @@map("money_accounts")
+}
+
+enum ProjectStatus {
+  ON_GOING // On Going
+  PROCESSING // remove later, use ON_GOING
+  ON_HOLD // On Hold
+  MAINTAIN // Maintain
+  PENDING // Pending
+  CLOSED // Closed
+  BIDDING // Bidding
+}
+
+model Project {
+  id     String        @id @default(cuid())
+  code   String        @unique // Mã dự án
+  name   String // Tên dự án
+  status ProjectStatus @default(ON_GOING) // Tình trạng dạng dropdown
+
+  jiraKey        String?              @map("jira_key") // Mã dự án Jira (project key)
+  jiraId         String?              @map("jira_id") // ID của Jira project để liên kết
+  // Category relation
+  jiraCategoryId String?              @map("jira_category_id")
+  jiraCategory   JiraProjectCategory? @relation(fields: [jiraCategoryId], references: [id])
+
+  clientName   String?   @map("client_name") // Tên khách hàng
+  contactPoint String?   @map("contact_point") // Tên người liên hệ
+  // Thời gian
+  startDate    DateTime? @map("start_date") // Thời gian bắt đầu
+  endDate      DateTime? @map("end_date") // Thời gian kết thúc
+  notes        String?   @db.Text // Ghi chú
+
+  followerId String?          @map("follower_id") // Người theo dõi dự án
+  follower   EmployeeProfile? @relation("FollowerProject", fields: [followerId], references: [id])
+
+  clientFollowerId String?          @map("client_follower_id") // Người theo dõi dự án
+  clientFollower   EmployeeProfile? @relation("ClientFollowerProject", fields: [clientFollowerId], references: [id])
+
+  isEvaluationRequired Boolean @default(true) @map("is_evaluation_required") // Toggle bật/tắt hệ thống
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  VoucherDetail VoucherDetail[]
+
+  projectMembers ProjectMember[]
+
+  candidateProjects CandidateProject[]
+
+  // NEW: Relations cho hệ thống đánh giá
+  evaluationSummaries ProjectEvaluationSummary[] // Tổng hợp điểm theo kỳ
+  evaluations         ProjectEvaluation[] // Tổng hợp điểm theo kỳ follower
+}
+
+// ============================================
+// MODEL MỚI: PROJECT - STAFF RELATIONSHIP
+// ============================================
+
+model ProjectMember {
+  id String @id @default(cuid())
+
+  // Foreign keys
+  projectId  String @map("project_id")
+  employeeId String // Link tới EmployeeProfile
+
+  // Thông tin vai trò và thời gian
+  position  String? // Vai trò trong dự án category with type POSITION
+  startDate DateTime  @map("start_date") // Ngày bắt đầu tham gia
+  endDate   DateTime? @map("end_date") // Ngày kết thúc (null nếu còn làm)
+  notes     String?   @db.Text // Ghi chú
+
+  followerId String?          @map("follower_id") // Người theo dõi dự án
+  follower   EmployeeProfile? @relation("EmployeeProjectMemberFollower", fields: [followerId], references: [id])
+
+  attachments         String[] // Đính kèm files ids
+  defaultWorkingHours Float?   @map("default_working_hours") // Số giờ làm việc mặc định hàng ngày 2.5h cho PM
+
+  // Metadata
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  deleted   Boolean  @default(false)
+
+  // Relations
+  project  Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  employee EmployeeProfile @relation("EmployeeProjectMembership", fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, employeeId, position, startDate]) // Một người có thể có nhiều vai trò khác nhau hoặc tham gia lại
+  @@index([projectId])
+  @@index([employeeId])
+  @@index([startDate])
+  @@map("project_members")
+}
+
+model VoucherRelation {
+  id        String  @id @default(cuid())
+  voucherId String
+  voucher   Voucher @relation(fields: [voucherId], references: [id], onDelete: Cascade)
+
+  relatedType RelatedObjectType // INVOICE, PROJECT, PROCESS...
+  relatedId   String // ID thực tế
+
+  @@unique([voucherId, relatedType, relatedId])
+  @@map("voucher_relations")
+}
+
+model VoucherApproval {
+  id         String  @id @default(cuid())
+  voucherId  String
+  voucher    Voucher @relation(fields: [voucherId], references: [id], onDelete: Cascade)
+  approverId String
+  approver   User    @relation(fields: [approverId], references: [id], onDelete: Cascade)
+
+  status   ApprovalStatus @default(PENDING)
+  comments String?
+  index    Int            @default(0) // Thứ tự duyệt
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("voucher_approvals")
+}
+
+enum VoucherType {
+  RECEIPT // Phiếu thu
+  PAYMENT // Phiếu chi
+}
+
+enum VoucherStatusEnum {
+  DRAFT
+  PROCESSING
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+enum RelatedObjectType {
+  // INVOICE
+  CONTRACT
+  // PURCHASE_ORDER
+  // SALES_ORDER
+  PROJECT
+  PROCESS
+  VENDOR
+}
+
+// Enums for Accounting Module
+
+enum ApprovalStatus {
+  PENDING // Chờ duyệt
+  APPROVED // Đã duyệt
+  REJECTED // Từ chối
+  SKIPPED // Bỏ qua
+}
+
+enum ChecklistStatus {
+  PENDING // Chờ thực hiện
+  IN_PROGRESS // Đang thực hiện
+  COMPLETED // Hoàn thành
+  SKIPPED // Bỏ qua
+}
+
+// //todo: check remove
+// model EmployeeTemp {
+//   id        String        @id @default(cuid())
+//   fullName  String?
+//   processId String
+//   process   Process?      @relation(fields: [processId], references: [id], onDelete: Cascade)
+//   status    ProcessStatus @default(TODO) // todo, processing, completed, failed
+//
+//   gender        Gender?
+//   birthDate     DateTime?
+//   birthPlace    String?
+//   hometown      String?
+//   nationality   String?
+//   maritalStatus MaritalStatus?
+//
+//   citizenId           String?
+//   citizenIdIssueDate  DateTime?
+//   citizenIdIssuePlace String?
+//
+//   personalTaxCode String?
+//
+//   permanentAddress String?
+//   currentAddress   String?
+//   phone            String?
+//   email            String?
+//
+//   vehicleNumber String? // Biển số xe
+//   vehicleInfo   String? // Loại xe/Màu xe
+//
+//   bankAccount     String?
+//   bankAccountName String?
+//   bankName        String?
+//   bankBranch      String?
+//
+//   joinedInsurance Boolean? // Đã tham gia BHXH
+//   insuranceNumber String? // Số sổ BHXH
+//
+//   position          String? // Vị trí làm việc
+//   hireDate          DateTime?
+//   probationDuration String? // Thời gian thử việc
+//
+//   emergencyContactName     String? // Người liên hệ khi cần
+//   emergencyContactRelation String? // Mối quan hệ
+//   emergencyContactPhone    String? // Điện thoại liên hệ
+//
+//   createdAt DateTime @default(now())
+//   updatedAt DateTime @updatedAt
+//
+//   @@map("employee_temp")
+// }
+
+// Process workflow
+
+enum ProcessStatus {
+  TODO
+  PROCESSING
+  COMPLETED
+  CANCELLED
+}
+
+model Process {
+  id          String        @id @default(cuid())
+  name        String
+  processType String // e.g., "Onboarding"
+  status      ProcessStatus @default(TODO) // todo, processing, completed, failed
+  description String?
+  startTime   DateTime?
+  endTime     DateTime?
+  isHourly    Boolean       @default(false) // Giao việc theo giờ?
+  attachments String[] // File đính kèm
+
+  createAt  DateTime  @default(now())
+  createdBy String?
+  creator   User?     @relation("ProcessCreator", fields: [createdBy], references: [id])
+  updatedAt DateTime? @updatedAt
+
+  // Quan hệ
+  responsibleUsers ProcessUser[] // Nhiều user chịu trách nhiệm
+
+  // for each process type
+  onboardData OnboardingProcess?
+  // EmployeeTemp EmployeeTemp[]
+
+  processData         Json? // store form data of any process dynamic part ( currently just store offboard form data for init)
+  purchaseWorkflow    PurchaseWorkflow?
+  offboardingWorkflow OffboardingWorkflow?
+
+  changeSocialInsuranceWorkflow ChangeSocialInsuranceWorkflow?
+
+  ProcessStep        ProcessStep[]
+  WorkflowChecklist  WorkflowChecklist[]
+  HandoverAssignment HandoverAssignment[]
+
+  @@map("processes")
+}
+
+model ProcessUser {
+  id              String  @id @default(cuid())
+  processId       String
+  userId          String
+  processStepCode String? // support for assigner to step
+
+  process Process @relation(fields: [processId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createAt DateTime @default(now())
+
+  // ProcessStep ProcessStep? @relation(fields: [processId, processStepCode], references: [processId, stepCode])
+  @@map("process_users")
+}
+
+model OnboardingProcess {
+  processId     String     @id
+  personalEmail String
+  username      String?
+  laborType     LaborType? // Loại lao động: In-house, CTV, vendor
+
+  process Process @relation(fields: [processId], references: [id], onDelete: Cascade)
+
+  @@map("process_onboard")
+}
+
+enum StepType {
+  APPROVAL // Approval step
+  REVIEW // Review step
+  VIEW // Review step
+  // VALIDATION // Validation step
+  // PAYMENT // Payment processing step
+  // NOTIFICATION // Notification step
+  ACTION // Custom step
+}
+
+enum StepStatus {
+  PENDING // Step is pending
+  IN_PROGRESS // Step is in progress
+  APPROVED // Đã duyệt
+  COMPLETED // Step is completed
+  REJECTED // Step is rejected
+  SKIPPED // Step is skipped
+  BLOCKED // Step is blocked by dependencies
+}
+
+model ProcessStep {
+  id          String  @id @default(cuid())
+  processId   String
+  process     Process @relation(fields: [processId], references: [id], onDelete: Cascade)
+  processType String // e.g., "Payment"
+
+  // Step Information
+  stepCode      String // Unique step identifier within workflow
+  name          String // Step name
+  description   String? // Step description
+  type          StepType // Step type
+  status        StepStatus @default(BLOCKED) // Step status
+  order         Int        @default(0) // Thứ tự duyệt
+  isFinal       Boolean    @default(false) // Có phải bước cuối không
+  disableRevert Boolean    @default(false) // co bi chan revert khong
+
+  // Assignment Information
+  assignedTo String? // User assigned to this step
+  assignee   User?   @relation("StepAssignee", fields: [assignedTo], references: [id])
+  // assignedUsers ProcessUser[] // Nhiều user chịu trách nhiệm
+  // approvalStatus ApprovalStatus @default(PENDING)
+
+  // Execution Information
+  startedAt   DateTime?
+  completedAt DateTime?
+  completedBy String?
+  completer   User?     @relation("StepCompleter", fields: [completedBy], references: [id])
+  comments    String? // Comments from the user who completed the step
+  dueDate     DateTime?
+
+  // Action Configuration
+  availableActions String[] // Available actions for this step
+
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  SettlementForm    SettlementForm[]
+  WorkflowChecklist WorkflowChecklist[]
+
+  @@unique([processId, stepCode])
+  @@map("process_steps")
+}
+
+// Voucher process
+model PurchaseWorkflow {
+  processId String @id
+
+  requestDate   DateTime? // Ngày đề nghị
+  executionDate DateTime // Ngày thực hiện
+  reason        String? // Lý do mua hàng / tạm ứng
+
+  payeeName    String? // Tên người nhận thanh toán
+  payeeAccount String? // Số tài khoản
+  payeeBank    String? // Ngân hàng
+
+  productService String // Sản phẩm / dịch vụ
+  amount         Decimal @db.Decimal(18, 2) // Số tiền
+  attachments    String? // File đính kèm
+  note           String? // Ghi chú
+
+  // approvals PurchaseWorkflowApproval[] // Quy trình duyệt
+
+  // Quan hệ tới Process
+  process        Process          @relation(fields: [processId], references: [id], onDelete: Cascade)
+  SettlementForm SettlementForm[]
+
+  @@map("purchase_workflow")
+}
+
+model SettlementForm {
+  id String @id @default(cuid())
+
+  // Quan hệ tới workflow
+  purchaseWorkflowId String
+  PurchaseWorkflow   PurchaseWorkflow @relation(fields: [purchaseWorkflowId], references: [processId], onDelete: Cascade)
+
+  // Quan hệ tới step
+  processStepId String
+  processStep   ProcessStep @relation(fields: [processStepId], references: [id], onDelete: Cascade)
+
+  // Ngày tháng
+  requestDate    DateTime // Ngày nhận đề nghị
+  settlementDate DateTime // Ngày quyết toán
+
+  // Tiền tệ
+  requestedAmount Decimal @db.Decimal(18, 2) // Số tiền đề nghị
+  paidAmount      Decimal @db.Decimal(18, 2) // Số tiền đã thanh toán
+  refundAmount    Decimal @db.Decimal(18, 2) // Số tiền hoàn ứng
+
+  // Phiếu chi / Phiếu thu
+  // voucherPayments SettlementFormVoucherPayment[]
+  // voucherReceipts SettlementFormVoucherReceipt[]
+
+  // File + Note
+  attachments String[]
+  comment     String? // Ý kiến duyệt (rich text -> lưu HTML / JSON string)
+
+  // Audit
+  status     StepStatus @default(PENDING)
+  approvedBy String?
+  approver   User?      @relation(fields: [approvedBy], references: [id])
+  approvedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("settlement_forms")
+}
+
+// offboarding
+model OffboardingWorkflow {
+  processId String @id
+  // attachments String? // File đính kèm
+
+  // Employee Information
+  employeeId String
+  employee   EmployeeProfile @relation(fields: [employeeId], references: [id])
+
+  // Biên bản bàn giao (process-level handover report files)
+  handoverReportIds String[] @default([])
+
+  // Quan hệ tới Process
+  process Process @relation(fields: [processId], references: [id], onDelete: Cascade)
+
+  @@map("offboarding_workflow")
+}
+
+model WorkflowChecklist {
+  id String @id @default(cuid())
+
+  // Process Reference
+  processId     String
+  process       Process     @relation(fields: [processId], references: [id], onDelete: Cascade)
+  processStepId String
+  processStep   ProcessStep @relation(fields: [processStepId], references: [id], onDelete: Cascade)
+  order         Int         @default(0)
+
+  // Checklist Item
+  code        String // Category with type OFFBOARDING_CHECKLIST,...
+  name        String
+  description String?
+  isRequired  Boolean @default(true)
+
+  // Status
+  status ChecklistStatus @default(PENDING)
+
+  // Completion
+  completedBy String?
+  completedAt DateTime?
+  notes       String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("workflow_checklists")
+}
+
+// Workflow for changing social insurance information (thay đổi thông tin BHXH)
+model ChangeSocialInsuranceWorkflow {
+  processId String @id
+
+  // Thời gian bắt đầu
+  startDate      DateTime?
+  startMonthOnly Boolean   @default(false) // true = chỉ lưu tháng/năm, false = full ngày
+
+  // Thời gian kết thúc
+  endDate      DateTime?
+  endMonthOnly Boolean   @default(false) // true = chỉ lưu tháng/năm, false = full ngày
+
+  // Quan hệ tới Process
+  process Process @relation(fields: [processId], references: [id], onDelete: Cascade)
+
+  @@map("change_social_insurance_workflow")
+}
+
+// ===== VIRTUALIZED FILE MANAGEMENT SYSTEM =====
+
+// Virtual Drive - Each entity (User, Project, Department, etc.) has its own drive
+model VirtualDrive {
+  id          String  @id @default(cuid())
+  name        String // Display name for the drive
+  description String?
+
+  // Entity association (polymorphic)
+  entityId   String
+  entityType String // User, Project, Department, LeaveRequest, etc.
+
+  // Scope-based organization
+  // scopeId String?
+  // scope   Scope?  @relation(fields: [scopeId], references: [id])
+
+  // Drive settings
+  maxStorageSize BigInt? // Maximum storage in bytes (null = unlimited)
+  isPublic       Boolean @default(false) // Whether the drive is publicly accessible
+  isActive       Boolean @default(true)
+
+  // Root folder reference
+  rootFolderId String? @unique
+
+  // Metadata
+  createdBy String // User ID who created the drive
+
+  // Relations
+  rootFolder  Folder?           @relation("DriveRootFolder", fields: [rootFolderId], references: [id])
+  folders     Folder[]          @relation("DriveAllFolders")
+  files       File[]
+  permissions DrivePermission[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([entityType, entityId]) // One drive per entity
+  @@map("virtual_drives")
+}
+
+// Virtual Folder - Hierarchical folder structure within drives
+model Folder {
+  id          String  @id @default(cuid())
+  name        String
+  description String?
+  path        String // Full path from root (e.g., "/Documents/Projects/2024")
+
+  // Hierarchy
+  parentId String?
+  parent   Folder?  @relation("FolderHierarchy", fields: [parentId], references: [id])
+  children Folder[] @relation("FolderHierarchy")
+
+  // Drive association
+  driveId String
+  drive   VirtualDrive @relation("DriveAllFolders", fields: [driveId], references: [id], onDelete: Cascade)
+
+  // Special folder types
+  isSystemFolder Boolean @default(false) // System folders like "Avatar", "Documents", etc.
+  folderType     String? // avatar, documents, attachments, shared, etc.
+
+  // Permissions and settings
+  isPublic Boolean @default(false)
+
+  // Metadata
+  createdBy String? // User ID who created the folder
+  creator   User?   @relation("FolderCreator", fields: [createdBy], references: [id], onDelete: SetNull)
+
+  // Relations
+  files       File[]
+  permissions DrivePermission[]
+  shareLinks  FileShareLink[]
+  driveAsRoot VirtualDrive?     @relation("DriveRootFolder")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([driveId, path]) // Unique path within drive
+  @@map("folders")
+}
+
+// File - Individual files within folders
+model File {
+  id       String @id @default(cuid())
+  fileName String
+  path     String // S3 key or local file path
+  fileSize BigInt
+  mimeType String
+
+  // File organization
+  folderId String?
+  folder   Folder? @relation(fields: [folderId], references: [id])
+
+  driveId String
+  drive   VirtualDrive @relation(fields: [driveId], references: [id], onDelete: Cascade)
+
+  // File metadata
+  category    String   @default("other") // avatar, document, attachment, etc.
+  tags        String[] // Searchable tags
+  description String?
+
+  // File status and versioning
+  status   String  @default("pending") // pending, uploaded, processing, ready, deleted
+  version  Int     @default(1)
+  isLatest Boolean @default(true)
+
+  // Access control
+  isPublic Boolean @default(false)
+
+  // Entity association (for backward compatibility and quick access)
+  entityId   String?
+  entityType String?
+
+  // Metadata
+  uploadedBy String? // User ID who uploaded the file
+  uploader   User?   @relation("FileUploader", fields: [uploadedBy], references: [id], onDelete: SetNull)
+
+  deleted Boolean @default(false)
+
+  // File relationships
+  parentFileId   String? // For file versions
+  parentFile     File?            @relation("FileVersions", fields: [parentFileId], references: [id])
+  versions       File[]           @relation("FileVersions")
+  shareLinks     FileShareLink[]
+  FileManagement FileManagement[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("files")
+}
+
+// Drive Permissions - Control access to drives and folders
+model DrivePermission {
+  id String @id @default(cuid())
+
+  // Target (what is being accessed)
+  driveId String?
+  drive   VirtualDrive? @relation(fields: [driveId], references: [id], onDelete: Cascade)
+
+  folderId String?
+  folder   Folder? @relation(fields: [folderId], references: [id], onDelete: Cascade)
+
+  // Subject (who has access)
+  userId String? // Specific user
+  role   String? // Role-based access (HR, ADMIN, etc.)
+
+  // Permission level
+  permission String // read, write, admin, owner
+
+  // Metadata
+  grantedBy String // User ID who granted the permission
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("drive_permissions")
+}
+
+// File Share Links - Temporary or permanent sharing links
+model FileShareLink {
+  id    String @id @default(cuid())
+  token String @unique // Unique sharing token
+
+  fileId String?
+  file   File?   @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  folderId String?
+  folder   Folder? @relation(fields: [folderId], references: [id], onDelete: Cascade)
+
+  // Share settings
+  permission    String    @default("read") // read, write
+  expiresAt     DateTime?
+  maxDownloads  Int?
+  downloadCount Int       @default(0)
+
+  // Access control
+  requiresPassword Boolean  @default(false)
+  passwordHash     String?
+  allowedEmails    String[] // Specific emails that can access
+
+  // Metadata
+  createdBy String // User ID who created the share
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("file_share_links")
+}
+
+// ===== FILE MANAGEMENT =====
+
+enum ReferenceType {
+  EMPLOYEE
+  CONTRACT
+  OTHER
+}
+
+enum FileExamType {
+  SO_YEU_LY_LICH
+  GIAY_KHAM_SUC_KHOE
+  CHUNG_MINH_THU
+  SO_HO_KHAU
+  GIAY_KHAI_SINH
+  CV
+  ATTACHMENT
+  OTHER
+}
+
+model FileManagement {
+  id            String        @id @default(cuid())
+  fileId        String
+  file          File          @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  note          String?
+  referenceId   String
+  referenceType ReferenceType
+  type          FileExamType
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deleted   Boolean  @default(false)
+
+  @@map("file_management")
+}
+
+// Jira sync
+model JiraProjectCategory {
+  id          String  @id @map("id") @db.VarChar(50)
+  name        String  @map("name")
+  description String? @map("description") @db.Text
+  self        String? @map("self")
+
+  jiraProjects JiraProject[]
+  projects     Project[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model JiraProject {
+  id             String   @id @map("id") @db.VarChar(50) // Jira project.id
+  key            String   @map("key")
+  name           String   @map("name")
+  self           String?  @map("self")
+  projectTypeKey String?  @map("projectTypeKey")
+  expand         String?  @map("expand")
+  simplified     Boolean? @map("simplified")
+
+  // Category relation
+  categoryId String?              @map("categoryId")
+  category   JiraProjectCategory? @relation(fields: [categoryId], references: [id])
+
+  // Thêm các trường hữu ích
+  description String?   @map("description") @db.Text
+  // Status flags
+  archived    Boolean?  @default(false) @map("archived")
+  deleted     Boolean?  @default(false) @map("deleted")
+  // Thông tin về deletion (nếu có)
+  deletedBy   String?   @map("deletedBy")
+  deletedDate DateTime? @map("deletedDate")
+
+  issues JiraIssue[]
+
+  overtimeApplications OvertimeApplication[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model JiraIssue {
+  id        String  @id @map("id") @db.VarChar(50) // Jira issue.id
+  key       String  @map("key")
+  self      String  @map("self")
+  summary   String  @map("summary")
+  // description String?   @map("description")
+  status    String? @map("status") // issue.fields.status.name
+  issueType String? @map("issueType") // issue.fields.issuetype.name
+  isSubtask Boolean @default(false) // issuetype.subtask
+
+  projectId String @map("projectId")
+  // reporterId  String?   @map("reporterId")
+  // assigneeId  String?   @map("assigneeId")
+  // created     DateTime? @map("created")
+  // updated     DateTime? @map("updated")
+
+  // ===== Hierarchy =====
+  parentId String?    @map("parentId") @db.VarChar(50)
+  parent   JiraIssue? @relation("IssueHierarchy", fields: [parentId], references: [id])
+
+  children JiraIssue[] @relation("IssueHierarchy")
+
+  // ===== Optional Epic link (classic project) =====
+  epicKey String? @map("epicKey") // customfield_xxx
+
+  dueDate  DateTime? @map("dueDate")
+  priority String?   @map("priority")
+
+  // ===== BỔ SUNG: Đánh dấu issue manual =====
+  isManual Boolean @default(false) @map("isManual") // true = tạo bằng tay để log work
+
+  project  JiraProject   @relation(fields: [projectId], references: [id])
+  worklogs JiraWorklog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model JiraWorklog {
+  id      String @id @map("id") @db.VarChar(50) // Jira worklog.id
+  issueId String @map("issueId")
+
+  authorId String?
+  author   JiraAuthor? @relation("WorklogAuthor", fields: [authorId], references: [id], onDelete: NoAction)
+
+  updateAuthorId String?
+  updateAuthor   JiraAuthor? @relation("WorklogUpdateAuthor", fields: [updateAuthorId], references: [id], onDelete: NoAction)
+
+  comment          String?  @map("comment")
+  started          DateTime @map("started")
+  timeSpent        String   @map("timeSpent") // e.g. "3h 20m"
+  timeSpentSeconds Int      @map("timeSpentSeconds")
+  created          DateTime @map("created")
+  updated          DateTime @map("updated")
+
+  // ===== BỔ SUNG: Đánh dấu issue manual =====
+  isManual Boolean @default(false) @map("isManual") // true = sinh tự động, không sync từ Jira
+
+  issue JiraIssue @relation(fields: [issueId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model JiraAuthor {
+  id          String  @id @map("id") // Jira accountId
+  self        String  @map("self")
+  displayName String  @map("displayName")
+  active      Boolean @map("active")
+  timeZone    String? @map("timeZone")
+  accountType String? @map("accountType")
+
+  // Avatar urls
+  avatar48 String? @map("avatar48")
+  avatar32 String? @map("avatar32")
+  avatar24 String? @map("avatar24")
+  avatar16 String? @map("avatar16")
+
+  // Quan hệ
+  worklogsAuthored JiraWorklog[] @relation("WorklogAuthor")
+  worklogsUpdated  JiraWorklog[] @relation("WorklogUpdateAuthor")
+}
+
+// lastTimeJob
+model SyncState {
+  id         Int      @id @default(autoincrement())
+  entityType String   @map("entityType") // project | issue | worklog | auto_worklog
+  lastSynced DateTime @map("lastSynced") // lần đồng bộ gần nhất
+
+  isRunning  Boolean   @default(false) @map("isRunning") // có đang chạy job không
+  startedAt  DateTime? @map("startedAt") // thời điểm bắt đầu chạy
+  finishedAt DateTime? @map("finishedAt") // thời điểm kết thúc gần nhất
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// === deleted history
+model DeletedHistory {
+  id        String   @id @default(cuid())
+  table     String
+  objectId  String
+  data      Json
+  deletedBy String? // ID của user xóa
+  deletedAt DateTime @default(now())
+
+  @@map("deleted_history")
+}
+
+// ======================================
+// ====== COMMENT SYSTEM (ERP-WIDE) =====
+// ======================================
+
+model Comment {
+  id         String            @id @default(cuid())
+  objectType CommentObjectType
+  objectId   String
+
+  parentId String?
+  parent   Comment?  @relation("CommentToReply", fields: [parentId], references: [id])
+  replies  Comment[] @relation("CommentToReply")
+
+  content     String
+  attachments String[] // File ids hoặc URL
+
+  createdBy String
+  creator   User   @relation(fields: [createdBy], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  isDeleted Boolean  @default(false)
+
+  mentions  CommentMention[]
+  reactions CommentReaction[]
+
+  @@index([objectType, objectId])
+  @@index([parentId])
+  @@map("comments")
+}
+
+enum CommentObjectType {
+  TIME_APPLICATION
+  PROCESS
+  VOUCHER
+  // mở rộng sau này: PAYROLL, EMPLOYEE, REQUEST, ...
+}
+
+// ======================================
+// ========== MENTION USERS =============
+// ======================================
+
+model CommentMention {
+  id        String @id @default(cuid())
+  commentId String
+  userId    String
+
+  comment Comment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([commentId, userId])
+  @@map("comment_mentions")
+}
+
+// ======================================
+// ========== REACTIONS (LIKE/EMOJI) ===
+// ======================================
+
+model CommentReaction {
+  id        String       @id @default(cuid())
+  commentId String
+  userId    String
+  type      ReactionType
+
+  comment Comment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([commentId, userId, type])
+  @@map("comment_reactions")
+}
+
+enum ReactionType {
+  LIKE
+  LOVE
+  DISLIKE
+  LAUGH
+  SAD
+  WOW
+}
+
+// === Activity Log (ERP-WIDE) ===
+model ActivityLog {
+  id String @id @default(cuid())
+
+  module String? // HRM, CV, MEMBER, AUTH,...
+  action String // e.g. SUBMIT_APPLICATION, EXPORT_MEMBER
+
+  title       String?
+  description String?
+
+  targetType String? // MEMBER, USER, APPLICATION
+  targetId   String?
+
+  userId   String?
+  username String? // lưu lại username tại thời điểm log
+  user     User?   @relation(fields: [userId], references: [id])
+
+  requestData  Json?
+  responseData Json? // chỉ metadata, không lưu file real
+  ipAddress    String?
+  userAgent    String? // Browser chome Version 142.0.7444.176, edge .. / App
+
+  createdAt DateTime @default(now())
+
+  @@index([module])
+  @@index([action])
+  @@index([userId])
+  @@index([targetType, targetId])
+  @@index([createdAt])
+  @@map("activity_logs")
+}
+
+// ===== Candidate Module =====
+
+model sourcing_candidate {
+  id String @id @default(cuid())
+
+  uid                 String?                                 @unique() @db.VarChar
+  fullname            String                                  @db.VarChar
+  birthday            String?                                 @db.VarChar
+  location            String?                                 @db.VarChar
+  email               String?                                 @db.VarChar
+  phone               String?                                 @db.VarChar
+  skype               String?                                 @db.VarChar
+  telegram            String?                                 @db.VarChar
+  facebook            String?                                 @db.VarChar
+  linkedin            String?                                 @db.VarChar
+  hashtag             String?                                 @db.VarChar
+  level               sourcing_candidate_level_enum           @default(FRESHER)
+  language_level      sourcing_candidate_language_level_enum  @default(BEGINNER)
+  otherLanguage       String?                                 @db.VarChar
+  notes               String?                                 @db.VarChar
+  availability        Boolean                                 @default(true)
+  attachedFile        String?                                 @db.VarChar
+  uploadedFile        String?                                 @db.VarChar
+  candidateStatus     sourcing_candidate_candidatestatus_enum @default(NEW)
+  created_date        DateTime                                @default(now()) @db.Timestamp(6)
+  updated_date        DateTime                                @default(now()) @db.Timestamp(6)
+  deleted             Boolean                                 @default(false)
+  techstacks          String?                                 @db.VarChar
+  latestContactStatus String?                                 @db.VarChar
+  workExperience      String?                                 @db.VarChar
+  ownerId             String?
+  formattedCV         String?                                 @db.VarChar
+  owner               User?                                   @relation("CandidateOwner", fields: [ownerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  vendorId String?
+  vendor   Supplier? @relation(fields: [vendorId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  yoe        Float?
+  mainstacks String[] //  ["Java", "Spring Boot", "AWS"]  from TECH_SKILL of category
+  avgCostVnd BigInt? // vnd form candidate project
+
+  highRecommend Float?  @default(0)
+  working       Boolean @default(false)
+
+  creatorId String?
+  creator   User?   @relation("CandidateCreator", fields: [creatorId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  cvFiles           sourcing_candidate_cv[]
+
+  candidateProjects CandidateProject[]
+
+  candidateOwnerChangeRequests CandidateOwnerChangeRequest[]
+
+  // NEW: Relation cho đánh giá
+  evaluationParticipations EvaluationMember[]
+
+  // Deal Relations
+  dealSubmissions DealCandidateSubmission[]
+}
+
+model sourcing_candidate_cv {
+  id          String    @id @default(cuid())
+  candidateId String
+  fileUrl     String    @db.VarChar
+  syncStatus  SyncStatus @default(PENDING)
+  syncedAt       DateTime?
+  cvServiceId String?   @db.VarChar
+  createdAt   DateTime  @default(now()) @db.Timestamp(6)
+  deleted     Boolean   @default(false)
+  deletedAt   DateTime?
+
+  candidate sourcing_candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+
+  @@index([candidateId])
+  @@map("sourcing_candidate_cv")
+}
+
+model CandidateProject {
+  id String @id @default(cuid())
+
+  // Relation
+  candidateId String
+  candidate   sourcing_candidate @relation(fields: [candidateId], references: [id])
+
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id])
+
+  // Business fields
+  startDate DateTime
+  endDate   DateTime?
+  costVnd   BigInt? // dùng BigInt cho tiền dùng tinh gia tri candidate.avgCost
+  costUsd   Float?
+
+  note     String? @db.VarChar
+  // role     String? // Backend / FE / Lead todo: replace by position
+  position String? // Vai trò trong dự án category with type POSITION
+
+  followerId String?          @map("follower_id") // Người theo dõi dự án ứng viên
+  follower   EmployeeProfile? @relation("EmployeeCandidateProjectFollower", fields: [followerId], references: [id])
+
+  attachments String[] // Đính kèm files ids
+
+  // Audit
+  createdBy    String?
+  created_date DateTime @default(now()) @db.Timestamp(6)
+  updated_date DateTime @updatedAt
+  deleted      Boolean  @default(false)
+
+  @@index([candidateId])
+  @@index([projectId])
+}
+
+model sourcing_comment {
+  id String @id @default(cuid())
+
+  content      String   @db.VarChar
+  candidateId  String
+  createdBy    String
+  created_date DateTime @default(now()) @db.Timestamp(6)
+  updated_date DateTime @default(now()) @db.Timestamp(6)
+  deleted      Boolean  @default(false)
+}
+
+model sourcing_history_log {
+  id String @id @default(cuid())
+
+  action_type  sourcing_history_log_action_type_enum
+  candidateId  String
+  createdBy    String
+  created_date DateTime                              @default(now()) @db.Timestamp(6)
+  updated_date DateTime                              @default(now()) @db.Timestamp(6)
+  deleted      Boolean                               @default(false)
+  data         String                                @db.VarChar
+}
+
+model sourcing_techstack {
+  id String @id @default(cuid())
+
+  name         String   @unique() @db.VarChar
+  created_date DateTime @default(now()) @db.Timestamp(6)
+  updated_date DateTime @default(now()) @db.Timestamp(6)
+  deleted      Boolean  @default(false)
+  isHashtag    Boolean? @default(false)
+}
+
+enum sourcing_candidate_candidatestatus_enum {
+  NEW
+  READY
+  QUALIFIED
+  DISQUALIFIED
+  BLOCKED // Blacklist
+}
+
+enum sourcing_candidate_language_level_enum {
+  BEGINNER
+  ELEMENTARY
+  INTERMEDIATE
+  UPPER_INTERMEDIATE
+  ADVANCED
+  PROFICIENT
+  NATIVE
+}
+
+enum sourcing_candidate_level_enum {
+  FRESHER
+  JUNIOR
+  MIDDLE
+  SENIOR
+  TEAM_LEAD
+  TECH_LEAD
+  INTERN
+  SOLUTION_ARCHITECT
+  PROJECT_MANAGER
+}
+
+enum sourcing_history_log_action_type_enum {
+  Create_new_candidate       @map("Create new candidate")
+  Edit_candidate_information @map("Edit candidate information")
+  Delete_candidate           @map("Delete candidate")
+  add_candidate_project
+  edit_candidate_project
+  delete_candidate_project
+  add_comment
+  edit_comment
+  delete_comment
+  update_high_recommend
+  change_candidate_owner
+}
+
+// Candidate Owner Change Request
+model CandidateOwnerChangeRequest {
+  id String @id @default(cuid())
+
+  candidateId String
+  candidate   sourcing_candidate @relation(fields: [candidateId], references: [id])
+
+  fromOwnerId String
+  fromOwner   User   @relation("FromOwner", fields: [fromOwnerId], references: [id])
+
+  toOwnerId String
+  toOwner   User   @relation("ToOwner", fields: [toOwnerId], references: [id])
+
+  status OwnerChangeStatus @default(PENDING)
+  note   String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  decidedAt DateTime?
+}
+
+enum OwnerChangeStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// ===== Evaluation =====
+
+// ============================================
+// 1. PHẦN CẤU HÌNH HỆ THỐNG (Admin - Dương)
+// ============================================
+
+// Cấu hình hệ thống đánh giá
+model EvaluationConfig {
+  id String @id @default(cuid())
+
+  // Cấu hình chung
+  isActive               Boolean @default(true) @map("is_active") // Toggle bật/tắt hệ thống
+  evaluationIntervalDays Int     @default(14) @map("evaluation_interval_days") // Bi-weekly = 14 days
+  alertThresholdDays     Int     @default(3) @map("alert_threshold_days") // Số ngày chưa cập nhật thì alert
+
+  // Phân loại dự án theo điểm trung bình
+  normalMinScore Float @default(4.0) @map("normal_min_score") // >= 4.0: Bình thường
+  issueMinScore  Float @default(2.5) @map("issue_min_score") // 2.5-3.9: Có issue
+  // < 2.5: Critical
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("evaluation_configs")
+}
+
+// Bộ câu hỏi mẫu (chỉ có 1 bộ dùng chung, không phân loại)
+model QuestionTemplate {
+  id String @id @default(cuid())
+
+  questionText String   @map("question_text") @db.Text // Nội dung câu hỏi
+  weight       Float    @default(1.0) // Trọng số câu hỏi
+  orderIndex   Int      @map("order_index") // Thứ tự hiển thị
+  isActive     Boolean  @default(true) @map("is_active") // Câu hỏi có đang active không
+  // Loại form đánh giá
+  formType     FormType @default(TEAM) @map("form_type") // TEAM hoặc CLIENT
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relation: snapshot khi tạo kỳ đánh giá
+  questionSnapshots EvaluationQuestion[]
+
+  @@map("question_templates")
+}
+
+// ============================================
+// 2. PHẦN DỮ LIỆU ĐÁNH GIÁ
+// ============================================
+
+// Bảng tổng hợp điểm chung cho TEAM + CLIENT trong cùng kỳ
+model ProjectEvaluationSummary {
+  id String @id @default(cuid())
+
+  projectId String  @map("project_id")
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  // Thời gian kỳ đánh giá
+  periodStartDate DateTime  @map("period_start_date")
+  periodEndDate   DateTime? @map("period_end_date")
+
+  // Điểm số từ các form
+  overallScore Float? @map("overall_score") // Điểm TB chung (trung bình của team + client)
+
+  // Trạng thái tổng quan
+  overallStatus ProjectEvaluationStatus @default(NORMAL) @map("overall_status")
+
+  // Ghi chú tổng hợp
+  summaryNotes String? @map("summary_notes") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  // evaluations ProjectEvaluation[]
+  alerts EvaluationAlert[] // ✅ FIXED: Added relation
+
+  @@unique([projectId, periodStartDate]) // Mỗi dự án, mỗi kỳ chỉ có 1 summary
+  @@index([projectId])
+  @@index([periodStartDate])
+  @@index([periodEndDate]) // ✅ FIXED: Added index
+  @@index([overallStatus])
+  @@map("project_evaluation_summaries")
+}
+
+// Kỳ đánh giá của dự án - Mỗi row cho 1 loại form (TEAM hoặc CLIENT)
+model ProjectEvaluation {
+  id String @id @default(cuid())
+
+  // Relation: Thuộc về summary nào (REQUIRED - không tồn tại độc lập)
+  // summaryId String?                   @map("summary_id")
+  // summary   ProjectEvaluationSummary? @relation(fields: [summaryId], references: [id], onDelete: Cascade)
+
+  projectId String  @map("project_id")
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  // Loại form đánh giá
+  formType FormType @map("form_type") // TEAM hoặc CLIENT
+
+  // Thời gian kỳ đánh giá (đã chuyển sang summary)
+  periodStartDate DateTime @default(now()) @map("period_start_date")
+
+  evaluationDate DateTime? @map("evaluation_date") // Ngày thực tế đánh giá
+
+  // Trạng thái đánh giá
+  status EvaluationStatus @default(PENDING)
+
+  // Điểm số tổng hợp
+  averageScore Float? @map("average_score") // Điểm trung bình của form này
+
+  // Trạng thái dự án dựa trên điểm
+  projectStatus ProjectEvaluationStatus @default(NORMAL) @map("project_status")
+
+  // Critical override
+  hasCriticalIssue  Boolean @default(false) @map("has_critical_issue") // Radio button đánh dấu critical
+  criticalIssueNote String? @map("critical_issue_note") @db.Text // Ghi chú vấn đề critical
+
+  // Deadline
+  hasDeadline         Boolean?  @default(false) @map("has_deadline")
+  deadlineDate        DateTime? @map("deadline_date")
+  deadlineDescription String?   @map("deadline_description") @db.Text // Deadline deliver cái gì
+
+  // Người thực hiện đánh giá (follower tương ứng với formType)
+  evaluatorId String?          @map("evaluator_id")
+  evaluator   EmployeeProfile? @relation("Evaluator", fields: [evaluatorId], references: [id])
+
+  // Ghi chú
+  notes String? @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  questions            EvaluationQuestion[]
+  participatingMembers EvaluationMember[] // Nhân sự tham gia được chọn
+  // evaluationActionNotifications EvaluationActionNotification[] // Thông báo action gửi đến nhân sự
+  alerts               EvaluationAlert[] // ✅ FIXED: Added relation
+
+  actions EvaluationAction[] // Actions được tạo cho form này
+
+  // ✅ FIXED: Corrected unique constraint and indexes
+  @@unique([periodStartDate, projectId, formType]) //
+  @@index([formType])
+  @@index([status]) // ✅ FIXED: Added
+  @@index([evaluatorId]) // ✅ FIXED: Added
+  @@index([evaluationDate]) // ✅ FIXED: Added
+  @@map("project_evaluations")
+}
+
+enum EvaluationStatus {
+  PENDING // Chưa đánh giá
+  IN_PROGRESS // Đang đánh giá
+  COMPLETED // Đã hoàn thành
+}
+
+enum ProjectEvaluationStatus {
+  NORMAL // >= normalMinScore
+  ISSUE // >= issueMinScore và < normalMinScore
+  CRITICAL // < issueMinScore hoặc hasCriticalIssue = true
+}
+
+// Snapshot câu hỏi tại thời điểm tạo kỳ đánh giá (bao gồm cả câu trả lời)
+model EvaluationQuestion {
+  id String @id @default(cuid())
+
+  evaluationId String            @map("evaluation_id")
+  evaluation   ProjectEvaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+
+  templateId String?           @map("template_id") // Reference đến template gốc
+  template   QuestionTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
+  // Snapshot dữ liệu từ template
+  questionText String @map("question_text") @db.Text
+  weight       Float  @default(1.0)
+  orderIndex   Int    @map("order_index")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // Câu trả lời (nullable - chưa trả lời thì null)
+  score      Int?      @db.SmallInt // Thang điểm 1-5 (using SmallInt for efficiency)
+  comment    String?   @db.Text // Ghi chú thêm
+  answeredAt DateTime? @map("answered_at") // Thời điểm trả lời
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([evaluationId])
+  @@index([templateId]) // ✅ FIXED: Added
+  @@map("evaluation_questions")
+}
+
+enum FormType {
+  TEAM // Form cho team follower (sinh khi project có followerId)
+  CLIENT // Form cho client follower (sinh khi project có clientFollowerId)
+}
+
+// Nhân sự/Candidate được chọn tham gia đánh giá
+model EvaluationMember {
+  id String @id @default(cuid())
+
+  evaluationId String            @map("evaluation_id")
+  evaluation   ProjectEvaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+
+  // Có thể là nhân sự hoặc candidate
+  employeeId String?          @map("employee_id")
+  employee   EmployeeProfile? @relation("EvaluatedEmployee", fields: [employeeId], references: [id])
+
+  candidateId String?             @map("candidate_id")
+  candidate   sourcing_candidate? @relation(fields: [candidateId], references: [id])
+
+  role  String? // Vai trò trong dự án
+  notes String? @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([evaluationId])
+  @@index([employeeId]) // ✅ FIXED: Added
+  @@index([candidateId]) // ✅ FIXED: Added
+  @@map("evaluation_members")
+}
+
+// ============================================
+// 3. HỆ THỐNG CẢNH BÁO
+// ============================================
+
+// Action được tạo từ form đánh giá
+model EvaluationAction {
+  id String @id @default(cuid())
+
+  evaluationId String            @map("evaluation_id")
+  evaluation   ProjectEvaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+
+  // Nội dung action
+  content String @db.Text // Action note/description
+
+  // Người tạo action (chỉ DM/Management)
+  createdById String @map("created_by_id")
+  createdBy   User   @relation("ActionCreator", fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  assignees EvaluationActionAssignee[] // Multiple assignees
+
+  @@index([evaluationId])
+  @@index([createdById])
+  @@index([createdAt])
+  @@map("evaluation_actions")
+}
+
+// Assignee của action (many-to-many relationship)
+model EvaluationActionAssignee {
+  id String @id @default(cuid())
+
+  actionId String           @map("action_id")
+  action   EvaluationAction @relation(fields: [actionId], references: [id], onDelete: Cascade)
+
+  // Nhân sự được assign
+  assigneeId String          @map("assignee_id")
+  assignee   EmployeeProfile @relation("ActionAssignee", fields: [assigneeId], references: [id])
+
+  // Trạng thái đọc của assignee này
+  isRead Boolean   @default(false) @map("is_read")
+  readAt DateTime? @map("read_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([actionId, assigneeId]) // Một action không assign trùng người
+  @@index([assigneeId, isRead]) // Query notifications cho user
+  @@index([actionId])
+  @@map("evaluation_action_assignees")
+}
+
+// Thông báo Action gửi đến nhân sự từ đánh giá
+// model EvaluationActionNotification {
+//   id String @id @default(cuid())
+//
+//   evaluationId String            @map("evaluation_id")
+//   evaluation   ProjectEvaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+//
+//   // Nhân sự được chỉ định nhận thông báo
+//   assignedToId String          @map("assigned_to_id")
+//   assignedTo   EmployeeProfile @relation("ActionAssignee", fields: [assignedToId], references: [id])
+//
+//   // Nội dung thông báo
+//   message String @db.Text // Nội dung action note
+//
+//   // Trạng thái
+//   isRead Boolean   @default(false) @map("is_read")
+//   readAt DateTime? @map("read_at")
+//
+//   // Người tạo action (thường là evaluator)
+//   createdById String          @map("created_by_id")
+//   createdBy   EmployeeProfile @relation("ActionCreator", fields: [createdById], references: [id])
+//
+//   createdAt DateTime @default(now()) @map("created_at")
+//   updatedAt DateTime @updatedAt @map("updated_at")
+//
+//   @@index([evaluationId])
+//   @@index([assignedToId, isRead])
+//   @@index([createdById]) // ✅ FIXED: Added
+//   @@map("evaluation_action_notifications")
+// }
+
+// ✅ FIXED: Chỉ dùng summaryId, bỏ evaluationId
+model EvaluationAlert {
+  id String @id @default(cuid())
+
+  // Alert thuộc về summary (cấp cao hơn evaluation)
+  summaryId String?                   @map("summary_id")
+  summary   ProjectEvaluationSummary? @relation(fields: [summaryId], references: [id], onDelete: Cascade)
+
+  evaluationId String?            @map("evaluation_id")
+  evaluation   ProjectEvaluation? @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+
+  alertType AlertType     @map("alert_type")
+  severity  AlertSeverity @default(INFO)
+
+  message String    @db.Text
+  isRead  Boolean   @default(false) @map("is_read")
+  readAt  DateTime? @map("read_at")
+
+  // Người nhận alert (Dương và followers)
+  recipientId String @map("recipient_id")
+  recipient   User   @relation("AlertRecipient", fields: [recipientId], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([recipientId, isRead])
+  @@index([summaryId])
+  @@index([alertType]) // ✅ FIXED: Added
+  @@index([createdAt]) // ✅ FIXED: Added
+  @@map("evaluation_alerts")
+}
+
+enum AlertType {
+  LOW_SCORE // Điểm thấp
+  CRITICAL_ISSUE // Có critical issue
+  MISSING_EVALUATION // Quá hạn chưa đánh giá
+  APPROACHING_DEADLINE // Sắp đến deadline
+}
+
+enum AlertSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+// ======================================
+// ===== ENTITY AUDIT LOG SYSTEM ========
+// ======================================
+// Enum cho loại entity được audit
+enum EntityAuditTargetType {
+  CANDIDATE // refactor from sourcing_candidate
+  DEAL // refactor from sales_deal
+  APPLICATION // refactor from time_application
+  PROJECT
+  // thêm mới chỉ cần add enum value
+  CRM_COMPANY
+  CRM_LEAD
+  CRM_DEAL
+  CRM_FOLLOW_UP
+}
+
+model EntityAuditLog {
+  id String @id @default(cuid())
+
+  // === Target: đối tượng được audit ===
+  targetType EntityAuditTargetType // CANDIDATE, DEAL, MEMBER, ...
+  targetId   String // ID của entity đó
+
+  // === Sub-entity (optional) ===
+  // Ví dụ: deal thay đổi submission → relatedType = SUBMISSION, relatedId = <submissionId>
+  // Ví dụ: candidate thay đổi skill → relatedType = SKILL, relatedId = <skillId>
+  relatedType String? // string vì sub-entity rất nhiều, không cần enum
+  relatedId   String?
+
+  // === Action ===
+  // Value là i18n key, ví dụ: "candidate.action.create"
+  action  String
+  context String? // mô tả ngắn: "Moved deal to SCANNING", "Removed submission X"
+
+  // === Dữ liệu thay đổi ===
+  // Format: { field: "status", oldValue: "NEW", newValue: "SCANNING" }
+  // Hoặc array nếu multi-field: [{ field, oldValue, newValue }, ...]
+  changes Json?
+
+  // === Người thực hiện ===
+  performedBy String
+  performer   User   @relation("EntityAuditor", fields: [performedBy], references: [id])
+
+  // === Network info ===
+  ipAddress String?
+  userAgent String? @db.Text
+
+  // === Metadata ===
+  createdAt DateTime @default(now())
+
+  // === Indexes ===
+  // Query chính: "lấy history của entity X" → cần (targetType, targetId, createdAt)
+  @@index([targetType, targetId, createdAt(sort: Desc)])
+  // Query: "ai đã làm gì" → cần (performedBy, createdAt)
+  @@index([performedBy, createdAt])
+  // Query: "filter by action type"
+  @@index([action])
+  // Sub-entity lookup
+  @@index([relatedType, relatedId])
+  @@map("entity_audit_logs")
+}
+
+// =====================================================
+// RECRUITMENT DEAL MANAGEMENT SYSTEM - SCHEMA ADDITION
+// =====================================================
+
+// Trạng thái Deal
+enum DealStatus {
+  NEW // Mới tạo (default)
+  SCANNING // Đang tìm CV
+  QUALIFYING // Đang đánh giá
+  PENDING // Đang chờ
+  DROPPED // Hủy bỏ
+  DONE // Hoàn thành
+}
+
+// Loại hình làm việc
+enum WorkingType {
+  INDIVIDUAL // Cá nhân
+  COLLABORATE_EXISTING // Phối hợp với team có sẵn
+  VN_TEAM // Team VN
+}
+
+// Mức độ tiếng Anh
+enum EnglishLevel {
+  NONE // Không
+  INTERMEDIATE // Trung bình
+  FLUENT // Thành thạo
+}
+
+// Độ ưu tiên (auto từ Potentiality, có thể modify sau)
+enum DealPriority {
+  HIGH // Từ 90%
+  MEDIUM // Từ 50%
+  LOW // Từ 30%
+}
+
+// Level vị trí
+enum PositionLevel {
+  JUNIOR // Junior
+  MIDDLE // Middle
+  SENIOR // Senior
+  TECH_LEAD // Tech Lead
+}
+
+// Trạng thái Candidate trong Deal
+enum CandidateInDealStatus {
+  CV_SCREENING // Lọc CV
+  APPLICATION_PASSED // Ứng tuyển đạt
+  APPLICATION_REJECTED // Ứng tuyển loại
+  BLACKLIST // Blacklist
+  PENDING_INTERVIEW // Chờ phỏng vấn
+  INTERVIEW_FAILED // Phỏng vấn không đạt
+  INTERVIEW_PASSED // Phỏng vấn đạt
+  INTERVIEW_DECLINED // Từ chối phỏng vấn
+  PENDING_INTERVIEW_2 // Chờ phỏng vấn lần 2
+  INTERVIEW_2_PASSED // Phỏng vấn đạt lần 2
+  INTERVIEW_2_FAILED // Phỏng vấn trượt lần 2
+  OFFER_ACCEPTED // Đồng ý Offer
+  OFFER_REJECTED // Từ chối Offer
+  PENDING_ONBOARD // Chờ nhận việc
+  ONBOARD_ACCEPTED // Đồng ý nhận việc
+  ONBOARD_REJECTED // Từ chối nhận việc
+  REQUEST_CANCELLED // Hủy request
+  CONSIDERING // Cân nhắc
+}
+
+// ===== MAIN TABLES =====
+
+// Bảng Deal (Yêu cầu nhân sự)
+model RecruitmentDeal {
+  id String @id @default(cuid())
+
+  dealName String? // Tên deal
+
+  // CRM link — chỉ set khi CrmDeal.type = ODC
+  crmDealId String?  @unique
+  crmDeal   CrmDeal? @relation("CrmDealRecruitment", fields: [crmDealId], references: [id])
+
+  // Thông tin khách hàng
+  clientName String // Tên khách hàng
+  country    String // Quốc gia (dropdown) Category with type COUNTRY
+
+  // Thông tin công việc
+  workingTime       String? // Thời gian làm việc (textbox)
+  workingType       WorkingType // Loại hình: Individual/Collaborate/VN Team
+  overlapsedTime    String? // Thời gian overlap (textbox)
+  hardCommunication Boolean      @default(false) // Khó giao tiếp hay không
+  englishLevel      EnglishLevel // Mức độ tiếng Anh
+
+  // Thông tin deal
+  description  String?       @db.Text // Mô tả
+  potentiality Int? // Độ tiềm năng: 90%, 50%, 30%
+  priority     DealPriority? // Độ ưu tiên (tự động gán theo Potentiality: 90% -> High, 50% -> Medium, 30% -> Low, field này có thể được modify sau nhưng tại thời điểm tạo deal sẽ là auto filled)
+  // positions relation bên dưới
+
+  interviewProcess String? @db.Text // Quy trình phỏng vấn (textbox)
+
+  // Thông tin bổ sung
+  note String? @db.Text // Ghi chú (textbox)
+
+  // Trạng thái
+  status DealStatus @default(NEW) // Auto set NEW khi tạo
+
+  attachments String[] // Đính kèm files ids
+
+  // Người tạo (Sales/BD)
+  createdById String
+  createdBy   User   @relation("DealCreator", fields: [createdById], references: [id])
+
+  followerId String? @map("follower_id") // Người theo dõi dự án ứng viên
+  follower   User?   @relation("UserRecruitmentDealFollower", fields: [followerId], references: [id])
+
+  // Metadata
+  deleted   Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  orderIndex Int? @default(0) // Dùng để sắp xếp thủ công trong pipeline , tăng mỗi 1000 để dễ dàng chèn giữa các deal
+
+  // Relations
+  positions DealPosition[]
+
+  candidateSubmissions DealCandidateSubmission[] // CV được submit vào deal
+  histories            DealHistory[] // Lịch sử comment/thay đổi
+  auditLogs            DealAuditLog[] // Audit log cho mọi thay đổi
+
+  @@index([status, orderIndex]) // Query theo pipeline (status) và sắp xếp theo orderIndex
+  @@index([createdById])
+  @@index([createdAt])
+  @@index([country])
+  @@index([priority])
+  @@index([potentiality])
+  @@map("recruitment_deals")
+}
+
+// Format: [{ position: "Backend Dev", maxGrossRate: 30000000 }, ...]
+// maxGrossRate: VNĐ (format số)
+
+model DealPosition {
+  id String @id @default(cuid())
+
+  dealId String
+  deal   RecruitmentDeal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+
+  position     String
+  level        PositionLevel? // Level: Junior, Middle, Senior, Tech Lead
+  quantity     Int            @default(1) // Số lượng vị trí cần tuyển
+  maxGrossRate Decimal?       @db.Decimal(15, 2)
+
+  orderIndex Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([dealId])
+  @@map("deal_positions")
+}
+
+// Bảng Submit Candidate vào Deal
+model DealCandidateSubmission {
+  id String @id @default(cuid())
+
+  // Deal
+  dealId String
+  deal   RecruitmentDeal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+
+  // Candidate hoặc Employee (chỉ có 1 trong 2)
+  candidateId String?
+  candidate   sourcing_candidate? @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+
+  employeeId String?
+  employee   EmployeeProfile? @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  // Level apply cho candidate/employee này (chọn khi submit)
+  level PositionLevel? // Junior, Middle, Senior, Tech Lead
+
+  // CV đính kèm (có thể khác với CV gốc của candidate)
+  attachments String[] // Đính kèm files ids
+
+  // Trạng thái của candidate/employee trong deal này
+  status CandidateInDealStatus @default(CV_SCREENING)
+  // Thông tin bổ sung
+  note   String?
+
+  // Người submit (HR - follower của candidate)
+  submittedBy String
+  submitter   User   @relation("CandidateSubmitter", fields: [submittedBy], references: [id])
+
+  // Metadata - lưu thời điểm để phục vụ thống kê
+  submittedAt DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  statusLogs SubmissionStatusLog[] // Lịch sử thay đổi trạng thái
+
+  @@unique([dealId, candidateId]) // Một candidate chỉ submit 1 lần vào 1 deal
+  @@unique([dealId, employeeId]) // Một employee chỉ submit 1 lần vào 1 deal
+  @@index([dealId])
+  @@index([candidateId])
+  @@index([employeeId])
+  @@index([submittedBy])
+  @@index([status])
+  @@index([submittedAt]) // Để query thống kê theo thời gian
+  @@map("deal_candidate_submissions")
+}
+
+model SubmissionStatusLog {
+  id String @id @default(cuid())
+
+  submissionId String
+  submission   DealCandidateSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  fromStatus CandidateInDealStatus
+  toStatus   CandidateInDealStatus
+  reason     String                @db.Text
+
+  performedBy String
+  performer   User   @relation("StatusLogPerformer", fields: [performedBy], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([submissionId])
+  @@index([performedBy])
+  @@index([createdAt])
+  @@map("submission_status_logs")
+}
+
+// Bảng Lịch sử Deal (Comment/Timeline)
+// Ghi lại từng lần khách hàng phản hồi, tracking quá trình
+model DealHistory {
+  id String @id @default(cuid())
+
+  dealId String
+  deal   RecruitmentDeal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+
+  // Nội dung comment/history
+  content String @db.Text
+
+  // Loại history (optional, để phân biệt và filter)
+  type String? @default("comment") // 'comment', 'status_change', 'submission', 'client_feedback', etc.
+
+  // Người tạo comment
+  createdById String
+  createdBy   User   @relation("DealHistoryCreator", fields: [createdById], references: [id])
+
+  // Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt // Cho phép edit comment (như Telegram)
+  isEdited  Boolean  @default(false) // Đánh dấu comment đã được edit
+
+  // Soft delete cho comment
+  deleted   Boolean   @default(false)
+  deletedAt DateTime?
+
+  @@index([dealId])
+  @@index([createdById])
+  @@index([createdAt])
+  @@index([type])
+  @@index([deleted]) // Để filter out deleted comments
+  @@map("deal_histories")
+}
+
+// Bảng Audit Log cho Deal
+// Lưu lại mọi thay đổi quan trọng của deal
+enum DealAuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  STATUS_CHANGE
+  ADD_SUBMISSION
+  UPDATE_SUBMISSION_STATUS
+  REMOVE_SUBMISSION
+}
+
+model DealAuditLog {
+  id String @id @default(cuid())
+
+  dealId String
+  deal   RecruitmentDeal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+
+  // Thông tin audit
+  action       DealAuditAction // 'CREATE', 'UPDATE', 'DELETE', 'STATUS_CHANGE', ADD_SUBMISSION, UPDATE_SUBMISSION_STATUS, REMOVE_SUBMISSION, etc.
+  entity       String          @default("deal") // 'deal', 'submission', etc.
+  submissionId String? // Nếu action liên quan đến submission thì có ID này
+  context      String? // Mô tả ngắn gọn về action: remove submission X from deal Y, etc.
+
+  // Dữ liệu thay đổi (JSON)
+  // Format: { field: "status", oldValue: "NEW", newValue: "SCANNING" }
+  changes Json?
+
+  // Người thực hiện
+  performedBy String
+  performer   User   @relation("DealAuditor", fields: [performedBy], references: [id])
+
+  // IP và thông tin bổ sung
+  ipAddress String?
+  userAgent String? @db.Text
+
+  // Metadata
+  createdAt DateTime @default(now())
+
+  @@index([dealId])
+  @@index([performedBy])
+  @@index([action])
+  @@index([createdAt])
+  @@map("deal_audit_logs")
+}
+
+// ===== CORE COMPETENCY ASSESSMENT SYSTEM =====
+
+// Bảng loại năng lực (5 tiêu chí cố định)
+model CompetencyType {
+  id String @id @default(cuid())
+
+  code        String  @unique // VD: "LANGUAGE", "COMMUNICATION", "LEADERSHIP", "PROFESSIONALISM", "TECHNICAL"
+  name        String // VD: "Năng lực Ngoại ngữ (Language Competency)"
+  nameVi      String?
+  description String? @db.Text
+  orderIndex  Int     @default(0) // Thứ tự hiển thị trong biểu đồ
+  weight      Float   @default(1.0)
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  levels            CompetencyLevel[]
+  assessmentDetails CompetencyAssessmentDetail[]
+
+  @@map("competency_types")
+}
+
+// Bảng level của từng năng lực
+model CompetencyLevel {
+  id String @id @default(cuid())
+
+  competencyTypeId String
+  competencyType   CompetencyType @relation(fields: [competencyTypeId], references: [id], onDelete: Cascade)
+
+  code        String // VD: "L1", "L2", "C0", "C1", "P-L1"
+  name        String // VD: "Level 1", "Beginner"
+  nameVi      String?
+  description String? @db.Text
+
+  // Giá trị số để tính toán biểu đồ radar (1-5 hoặc 0-4)
+  numericValue Int @default(0) // VD: L1=1, L2=2, L3=3, L4=4
+
+  orderIndex Int     @default(0) // Thứ tự hiển thị
+  isActive   Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  assessmentDetails CompetencyAssessmentDetail[]
+
+  @@unique([competencyTypeId, code])
+  @@index([competencyTypeId])
+  @@index([numericValue])
+  @@map("competency_levels")
+}
+
+// Bảng kỳ đánh giá năng lực
+model CompetencyAssessmentPeriod {
+  id String @id @default(cuid())
+
+  year  Int // Năm đánh giá
+  month Int // Tháng đánh giá (1-12)
+
+  name        String? // VD: "Đánh giá năng lực 01/2026"
+  description String? @db.Text
+
+  startDate DateTime // Ngày bắt đầu kỳ
+  endDate   DateTime? // Ngày kết thúc kỳ
+
+  status AssessmentPeriodStatus @default(OPEN) // OPEN, CLOSED
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  assessments CompetencyAssessment[]
+
+  @@unique([year, month])
+  @@index([year, month])
+  @@index([status])
+  @@map("competency_assessment_periods")
+}
+
+enum AssessmentPeriodStatus {
+  OPEN // Đang mở
+  CLOSED // Đã đóng
+}
+
+// Bảng đánh giá năng lực của nhân sự
+model CompetencyAssessment {
+  id String @id @default(cuid())
+
+  // Nhân sự được đánh giá
+  employeeId String
+  employee   EmployeeProfile @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  // Kỳ đánh giá
+  periodId String
+  period   CompetencyAssessmentPeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+
+  // Loại đánh giá
+  assessmentType AssessmentType @default(MANAGER) // SELF, MANAGER
+
+  // Người đánh giá (DM/BOD)
+  assessorId String? // Null nếu là tự đánh giá
+  assessor   User?   @relation("CompetencyAssessor", fields: [assessorId], references: [id])
+  avgScore   Float?  @map("avg_score") // Điểm trung bình toàn bộ năng lực theo trọng số
+
+  // Ghi chú chung cho bản đánh giá
+  note String? @db.Text
+
+  // Trạng thái
+  status AssessmentStatus @default(DRAFT)
+
+  // Thời gian
+  submittedAt DateTime? // Thời điểm submit
+  approvedAt  DateTime? // Thời điểm phê duyệt
+  approvedBy  String? // User ID người phê duyệt
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  details CompetencyAssessmentDetail[]
+
+  @@unique([employeeId, periodId, assessmentType]) // Mỗi nhân sự, mỗi kỳ, mỗi loại chỉ có 1 bản đánh giá
+  @@index([employeeId])
+  @@index([periodId])
+  @@index([assessorId])
+  @@index([status])
+  @@index([assessmentType])
+  @@map("competency_assessments")
+}
+
+enum AssessmentType {
+  SELF // Tự đánh giá
+  MANAGER // Đánh giá bởi quản lý (DM/BOD)
+}
+
+enum AssessmentStatus {
+  DRAFT // Nháp
+  SUBMITTED // Đã nộp
+  APPROVED // Đã phê duyệt
+  REJECTED // Bị từ chối
+}
+
+// Bảng chi tiết đánh giá từng năng lực
+model CompetencyAssessmentDetail {
+  id String @id @default(cuid())
+
+  assessmentId String
+  assessment   CompetencyAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+
+  competencyTypeId String
+  competencyType   CompetencyType @relation(fields: [competencyTypeId], references: [id])
+
+  // Level đánh giá
+  levelId String
+  level   CompetencyLevel @relation(fields: [levelId], references: [id])
+
+  // Ghi chú cho năng lực này (optional)
+  note String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([assessmentId, competencyTypeId])
+  @@index([assessmentId])
+  @@index([competencyTypeId])
+  @@index([levelId])
+  @@map("competency_assessment_details")
+}
+
+// ===== SEED DATA EXAMPLE =====
+// CompetencyType:
+// 1. LANGUAGE - Năng lực Ngoại ngữ (orderIndex: 1)
+//    Levels: UNDEFINED(0), L1(1), L2(2), L3(3), L4(4)
+//
+// 2. COMMUNICATION - Kỹ năng Giao tiếp (orderIndex: 2)
+//    Levels: UNDEFINED(0), C0(1), C1(2), C2(3), C3(4)
+//
+// 3. LEADERSHIP - Kỹ năng Dẫn dắt (orderIndex: 3)
+//    Levels: UNDEFINED(0), L1(1), L2(2), L3(3)
+//
+// 4. PROFESSIONALISM - Kỹ năng Chuyên nghiệp & Tuân thủ (orderIndex: 4)
+//    Levels: UNDEFINED(0), P-L1(1), P-L2(2), P-L3(3)
+//
+// 5. TECHNICAL - Năng lực Chuyên môn kỹ thuật (orderIndex: 5)
+//    Levels: FRESHER_JUNIOR(1), MIDDLE(2), SENIOR(3)
+
+model HandoverAssignment {
+  id        String  @id @default(cuid())
+  processId String
+  process   Process @relation(fields: [processId], references: [id], onDelete: Cascade)
+
+  // Assignment category: projectFollower, clientFollower, projectMemberFollower,
+  // candidateProjectFollower, evaluationActionAssignee, timeApplicationApprover,
+  // sourcingCandidateOwner, voucherApprover, processStepAssignee, manual
+  category    String
+  referenceId String?
+  name        String
+  detail      String?
+
+  // Assignee info
+  assigneeId       String
+  assigneeUserId   String
+  assigneeName     String
+  assignedByUserId String
+
+  // Status tracking
+  status       String    @default("PENDING_CONFIRMATION")
+  note         String?
+  assigneeNote String?
+  confirmedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([processId])
+  @@index([assigneeUserId])
+  @@index([status])
+  @@map("handover_assignments")
+}
+
+// ==== SYSTEM CONFIGURATION FOR APPLICATION MANAGEMENT AND OTHER =====
+model SystemConfig {
+  id String @id @default(cuid())
+
+  key         String  @unique // APPLICATION_OFFBOARDING_ENABLED, APPLICATION_LEAVE, APPLICATION_OVERTIME, APPLICATION_BUSINESS_TRIP,
+  group       String? // APPLICATION, PAYROLL, HR
+  description String?
+
+  value Json // có thể boolean, number, string, object
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([group])
+  @@map("system_configs")
+}
+
+// ============================================================
+// CRM MODULE - Prisma Schema
+// Relations: Company 0-n Lead, Lead 1-n Deal, Deal 0-1 RecruitmentDeal
+// Tích hợp chung EntityAuditLog, Comment, Notification từ hệ thống hiện có
+// ============================================================
+
+// ================================================================
+// CRM COMPANY
+// ================================================================
+
+model CrmCompany {
+  id   String @id @default(cuid())
+  name String // Check unique theo tên ở app-level
+
+  // Multi-select: Fintech, AI, Ecommerce, Healthcare, etc.
+  domains String[] // Lĩnh vực hoạt động Category with type DOMAIN: Category(type=DOMAIN).code
+
+  description       String? @db.Text
+  numberOfEmployees Int?
+  website           String?
+  email             String?
+  phone             String?
+  address           String?
+  city              String?
+
+  // FK mềm → Category(type=COUNTRY).code
+  countryCode String?
+
+  // Danh sách URL links
+  links String?
+
+  notes String? @db.Text
+
+  createdById String
+  createdBy   User   @relation("CrmCompanyCreator", fields: [createdById], references: [id])
+
+  deleted   Boolean   @default(false)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  leads CrmLead[]
+  deals CrmDeal[]
+
+  @@index([name])
+  @@index([createdById])
+  @@map("crm_companies")
+}
+
+// ================================================================
+// CRM LEAD
+// ================================================================
+
+enum CrmLeadStage {
+  NEW // Lead mới
+  HOT_LEAD // Lead tiềm năng cao
+  SQL // Sales Qualified Lead
+  CLIENT // Đã là khách hàng
+}
+
+model CrmLead {
+  id        String  @id @default(cuid())
+  firstName String
+  lastName  String?
+
+  companyId String?
+  company   CrmCompany? @relation(fields: [companyId], references: [id])
+
+  title String?
+
+  // FK mềm → Category(type=COUNTRY).code — optional
+  countryCode String?
+
+  stage    CrmLeadStage @default(NEW)
+  campaign String? // Mở rộng thành Lookup Campaign sau
+
+  nextFollowUp DateTime?
+  notes        String?   @db.Text
+
+  createdById String
+  createdBy   User   @relation("CrmLeadCreator", fields: [createdById], references: [id])
+
+  // Referral: lead này được giới thiệu từ lead nào
+  referredById String?
+  referredBy   CrmLead?  @relation("LeadReferrals", fields: [referredById], references: [id])
+  referrals    CrmLead[] @relation("LeadReferrals")
+
+  deleted   Boolean   @default(false)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  contacts  CrmLeadContact[]
+  dealLeads CrmDealLead[]
+
+  @@index([stage])
+  @@index([companyId])
+  @@index([createdById])
+  @@index([referredById])
+  @@map("crm_leads")
+}
+
+// Flexible multi-contact: email, phone, zalo, telegram, whatsapp, slack, linkedin, ...
+model CrmLeadContact {
+  id     String  @id @default(cuid())
+  leadId String
+  lead   CrmLead @relation(fields: [leadId], references: [id])
+
+  type  String // free-form: "email", "phone", "zalo", "telegram", "whatsapp", "slack", ...
+  value String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([leadId])
+  @@index([type, value])
+  @@map("crm_lead_contacts")
+}
+
+// ================================================================
+// CRM DEAL
+// ================================================================
+
+enum CrmDealStatus {
+  DISCOVERY // Discovery / Requirement Gathering (default)
+  PREPARING_PROPOSAL // Preparing Proposal (Estimation, CV Sourcing)
+  PROPOSAL_SENT // Proposal Sent
+  WON // Won
+  LOST // Lost
+  ON_HOLD // On Hold
+  PROJECT_STARTED // Project Started
+  PROJECT_COMPLETED // Project Completed
+  DROPPED // Dropped
+}
+
+enum CrmDealType {
+  ODC // Outsourcing Development Center → tạo RecruitmentDeal
+  FIXED_PRICE // Fixed Price
+}
+
+enum CrmDealTechnology {
+  WEB2
+  WEB3
+}
+
+enum CrmDealCurrency {
+  USD
+  VND
+  JPY
+  EUR
+}
+
+enum CrmContractStatus {
+  DRAFT // Nháp
+  SENT // Đã gửi
+  SIGNED // Đã ký
+  EXPIRED // Hết hạn
+}
+
+model CrmDeal {
+  id   String @id @default(cuid())
+  name String // Deal Name // @unique với deleted false check unique ở app-level vì xóa mềm
+
+  // Company — auto fill từ Lead nếu có, hoặc override
+  companyId String?
+  company   CrmCompany? @relation(fields: [companyId], references: [id])
+
+  status       CrmDealStatus      @default(DISCOVERY)
+  type         CrmDealType
+  potentiality Int? // Độ tiềm năng: 90%, 50%, 30%
+  technology   CrmDealTechnology?
+
+  // Multi-select: Fintech, AI, Ecommerce, Healthcare, Education, Gaming, Blockchain
+  domains  String[] // Lĩnh vực hoạt động Category with type DOMAIN: Category(type=DOMAIN).code
+  hashtags String[] // Free-form tags e.g. "Blockchain", "AI", "Web3"
+
+  dealValue Float?
+  currency  CrmDealCurrency @default(USD)
+
+  description    String?            @db.Text
+  contractLink   String?
+  contractStatus CrmContractStatus?
+
+  createdById String
+  createdBy   User   @relation("CrmDealCreator", fields: [createdById], references: [id])
+
+  deleted   Boolean   @default(false)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  // Relations
+  dealLeads CrmDealLead[]
+  followers CrmDealFollower[]
+  followUps CrmFollowUp[]
+  comments  CrmComment[]
+
+  // 0-1 với RecruitmentDeal — chỉ tạo khi type = ODC
+  // FK thực nằm ở RecruitmentDeal.crmDealId (STEP 3)
+  recruitmentDeal RecruitmentDeal? @relation("CrmDealRecruitment")
+
+  orderIndex Int? @default(0) // Dùng để sắp xếp thủ công trong pipeline , tăng mỗi 1000 để dễ dàng chèn giữa các deal
+
+  @@index([companyId])
+  @@index([status, orderIndex]) // composite thay vì riêng lẻ
+  // @@index([status])
+  @@index([type])
+  @@index([createdById])
+  @@index([createdAt])
+  @@map("crm_deals")
+}
+
+model CrmDealLead {
+  dealId String
+  deal   CrmDeal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+
+  leadId String
+  lead   CrmLead @relation(fields: [leadId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@id([dealId, leadId])
+  @@index([leadId])
+  @@map("crm_deal_leads")
+}
+
+// ================================================================
+// CRM DEAL FOLLOWERS
+// Nhận thông báo khi Deal: tạo / cập nhật / đổi trạng thái
+// ================================================================
+
+model CrmDealFollower {
+  id String @id @default(cuid())
+
+  dealId String
+  deal   CrmDeal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+
+  userId String
+  user   User   @relation("CrmDealFollower", fields: [userId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@unique([dealId, userId])
+  @@index([dealId])
+  @@index([userId])
+  @@map("crm_deal_followers")
+}
+
+// ================================================================
+// CRM FOLLOW-UP
+// Lịch họp / cuộc gọi gắn với Deal
+// ================================================================
+enum FollowUpStatus {
+  TODO
+  DONE
+}
+
+model CrmFollowUp {
+  id String @id @default(cuid())
+
+  title String
+
+  dealId String
+  deal   CrmDeal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+
+  startTime DateTime? // thời gian bắt đầu trên google calendar
+  endTime   DateTime // dealine cho việc hoàn thành follow-up
+  status    FollowUpStatus @default(TODO) // TODO, DONE
+
+  description String? @db.Text // Nội dung buổi họp / cuộc gọi
+  note        String? @db.Text // Ghi chú kết quả (có thể update sau khi họp xong)
+
+  googleCalendarEventId String? // Google Calendar event ID for sync
+  googleCalendarEndTime DateTime? // End time of the linked Google Calendar event (default: startTime + 1h)
+  guestEmails           String[] // External guest emails for Google Calendar (e.g. lead email)
+
+  createdById String
+  createdBy   User   @relation("CrmFollowUpCreator", fields: [createdById], references: [id])
+
+  deleted   Boolean   @default(false)
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  // Followers nhận:
+  //   - Thông báo khi được gán vào follow-up
+  //   - Nhắc tự động 10 phút trước startTime (job scheduler) hoặc khi tới hạn mà chưa hoàn thành
+  followers CrmFollowUpFollower[]
+
+  @@index([dealId])
+  @@index([startTime])
+  @@index([createdById])
+  @@map("crm_follow_ups")
+}
+
+// ================================================================
+// CRM FOLLOW-UP FOLLOWERS
+// ================================================================
+
+model CrmFollowUpFollower {
+  id         String      @id @default(cuid())
+  followUpId String
+  followUp   CrmFollowUp @relation(fields: [followUpId], references: [id], onDelete: Cascade)
+
+  userId String
+  user   User   @relation("CrmFollowUpFollower", fields: [userId], references: [id])
+
+  // Dùng cho scheduler: check field này để biết đã gửi nhắc chưa
+  reminderSentAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@unique([followUpId, userId])
+  @@index([followUpId])
+  @@index([userId])
+  // Scheduler query: WHERE reminderSentAt IS NULL AND followUp.startTime <= now() + 10min
+  @@index([reminderSentAt])
+  @@map("crm_follow_up_followers")
+}
+
+// ================================================================
+// CRM COMMENT
+// Ghi chú nội bộ trên Deal
+// ================================================================
+
+model CrmComment {
+  id String @id @default(cuid())
+
+  dealId String
+  deal   CrmDeal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+
+  content String @db.Text
+
+  isEdited  Boolean   @default(false)
+  deleted   Boolean   @default(false)
+  deletedAt DateTime?
+
+  createdById String
+  createdBy   User   @relation("CrmCommentCreator", fields: [createdById], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([dealId])
+  @@index([createdById])
+  @@index([deleted])
+  @@map("crm_comments")
+}
+
+// ================================================================
+// CRM NOTIFICATION
+//
+// Trigger cases:
+//   Deal CRUD + status change → notify CrmDealFollowers + createdBy
+//   FollowUp created          → notify CrmFollowUpFollowers
+//   FollowUp reminder         → scheduler runs every minute, sends to
+//                               CrmFollowUpFollower WHERE reminderSentAt IS NULL
+//                               AND startTime/endTime BETWEEN now() AND now() + 10min
+// ================================================================
+
+enum CrmNotificationType {
+  DEAL_CREATED // Deal mới được tạo
+  DEAL_UPDATED // Deal được cập nhật thông tin
+  DEAL_STATUS_CHANGED // Deal đổi trạng thái
+  FOLLOW_UP_CREATED // Follow-up mới được tạo, gán follower
+  FOLLOW_UP_UPDATED // Follow-up được cập nhật / note
+  FOLLOW_UP_REMINDER // Nhắc lịch tự động 10 phút trước startTime
+  COMMENT_CREATED // Comment mới trên deal
+}
+
+model CrmNotification {
+  id String @id @default(cuid())
+
+  type CrmNotificationType
+
+  recipientId String
+  recipient   User   @relation("CrmNotificationRecipient", fields: [recipientId], references: [id])
+
+  title   String
+  message String @db.Text
+
+  // Deep-link tới entity: "CRM_DEAL" | "CRM_FOLLOW_UP" | "CRM_COMMENT"
+  targetType String?
+  targetId   String?
+
+  // Dữ liệu bổ sung tuỳ loại noti
+  // VD: { dealName, oldStatus, newStatus } | { followUpTitle, startTime }
+  metadata Json?
+
+  isRead Boolean   @default(false)
+  readAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([recipientId, isRead])
+  @@index([recipientId, createdAt(sort: Desc)])
+  @@index([targetType, targetId])
+  @@map("crm_notifications")
+}

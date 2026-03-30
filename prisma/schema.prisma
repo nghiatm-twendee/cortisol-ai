@@ -1,0 +1,165 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../generated/prisma"
+  moduleFormat = "commonjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model TelegramUser {
+  telegramId String  @id
+  username   String?
+  firstName  String?
+  lastName   String?
+}
+
+model PaymentVoucher {
+  id          String      @id @default(uuid())
+  code        String
+  voucherType String
+  issueDate   DateTime
+  postingDate DateTime
+  content     String
+  accountId   String
+  account     BankAccount @relation(fields: [accountId], references: [id])
+
+  partnerCode   Json?
+  payerReceiver String
+  bankAccount   String
+  bankCode      String
+  note          String?
+
+  attachments  Json[]
+  currency     String
+  exchangeRate String
+  taxIncluded  Boolean
+  totalAmount  String
+  status       String
+
+  creatorId String
+  creator   Creator @relation(fields: [creatorId], references: [id])
+
+  details        Detail[]
+  approvals      Approval[]
+  relatedObjects RelatedObject[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model BankAccount {
+  id          String  @id @default(uuid())
+  code        String
+  name        String
+  description String
+  bank        String
+  isActive    Boolean
+
+  vouchers PaymentVoucher[]
+}
+
+model Detail {
+  id        String         @id @default(uuid())
+  voucherId String
+  voucher   PaymentVoucher @relation(fields: [voucherId], references: [id])
+
+  description String
+  quantity    Int
+  amount      String
+  taxRate     String
+  taxAmount   String
+  totalAmount String
+
+  expenseCategory String?
+  expenseObject   String?
+
+  employeeId String?
+  projectId  String?
+  supplierId String?
+  customerId Json?
+
+  employee Employee? @relation(fields: [employeeId], references: [id])
+  project  Project?  @relation(fields: [projectId], references: [id])
+  supplier Supplier? @relation(fields: [supplierId], references: [id])
+}
+
+model Employee {
+  id           String @id @default(uuid())
+  employeeCode String
+  fullName     String
+  gender       String
+  department   String
+  position     String
+  jobTitle     String
+  level        Json?
+
+  details Detail[]
+}
+
+model Project {
+  id   String @id @default(uuid())
+  code String
+  name String
+
+  details Detail[]
+}
+
+model Supplier {
+  id              String   @id @default(uuid())
+  code            String
+  name            String
+  contractDate    DateTime
+  contractEndDate DateTime
+
+  details Detail[]
+}
+
+model Approval {
+  id        String         @id @default(uuid())
+  voucherId String
+  voucher   PaymentVoucher @relation(fields: [voucherId], references: [id])
+
+  approverId String
+  approver   Approver @relation(fields: [approverId], references: [id])
+
+  status   String
+  comments String?
+  index    Int
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Approver {
+  id       String @id @default(uuid())
+  fullName String
+  email    String
+
+  approvals Approval[]
+}
+
+model RelatedObject {
+  id        String         @id @default(uuid())
+  voucherId String
+  voucher   PaymentVoucher @relation(fields: [voucherId], references: [id])
+
+  relatedType String
+  relatedId   String
+}
+
+model Creator {
+  id        String  @id @default(uuid())
+  firstName String?
+  lastName  String?
+  email     String  @unique
+
+  vouchers PaymentVoucher[]
+}
