@@ -337,9 +337,19 @@ export class TelegramUpdate {
   @On('text')
   async onMessage(@Ctx() ctx: Context): Promise<void> {
     const telegramId = String(ctx.from?.id);
-    const text = ((ctx.message as any)?.text ?? '').trim();
+    let text = ((ctx.message as any)?.text ?? '').trim();
 
     if (text.startsWith('/')) return;
+
+    // In groups, strip the bot mention if present
+    const isGroup = ctx.chat?.type === 'group' || ctx.chat?.type === 'supergroup';
+    if (isGroup) {
+      // Remove @botusername or @BotName mentions from the message
+      text = text.replace(/@\w+\s*/g, '').trim();
+      // If message is now empty after removing mentions, ignore it
+      if (!text) return;
+    }
+
     if (await this.handleVoucherSearchInput(telegramId, text, ctx)) return;
     if (await this.handleRejectionInput(telegramId, text, ctx)) return;
     await this.handleWithDispatch(telegramId, text, ctx);
@@ -349,6 +359,7 @@ export class TelegramUpdate {
   async onVoice(@Ctx() ctx: Context): Promise<void> {
     const telegramId = String(ctx.from?.id);
     const fileId = (ctx.message as any)?.voice?.file_id;
+    const isGroup = ctx.chat?.type === 'group' || ctx.chat?.type === 'supergroup';
 
     const hasPendingSearch =
       !!this.telegramService.getPendingVoucherSearch(telegramId);
@@ -361,7 +372,13 @@ export class TelegramUpdate {
         '🎤 Đang chuyển giọng nói thành văn bản...',
       );
       try {
-        const text = await this.telegramService.transcribeVoice(fileId);
+        let text = await this.telegramService.transcribeVoice(fileId);
+
+        // In groups, strip bot mention if present
+        if (isGroup) {
+          text = text.replace(/@\w+\s*/g, '').trim();
+        }
+
         try {
           await ctx.telegram.deleteMessage(
             ctx.chat!.id,
@@ -386,7 +403,12 @@ export class TelegramUpdate {
     );
 
     try {
-      const text = await this.telegramService.transcribeVoice(fileId);
+      let text = await this.telegramService.transcribeVoice(fileId);
+
+      // In groups, strip bot mention if present
+      if (isGroup) {
+        text = text.replace(/@\w+\s*/g, '').trim();
+      }
 
       try {
         await ctx.telegram.deleteMessage(
