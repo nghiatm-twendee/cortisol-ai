@@ -338,13 +338,13 @@ export class TelegramUpdate {
   async onMessage(@Ctx() ctx: Context): Promise<void> {
     const telegramId = String(ctx.from?.id);
     let text = ((ctx.message as any)?.text ?? '').trim();
+    const isGroup = ctx.chat?.type === 'group' || ctx.chat?.type === 'supergroup';
 
     if (text.startsWith('/')) return;
 
     // In groups, strip the bot mention if present
-    const isGroup = ctx.chat?.type === 'group' || ctx.chat?.type === 'supergroup';
+    const wasMentioned = text.match(/@\w+/);
     if (isGroup) {
-      // Remove @botusername or @BotName mentions from the message
       text = text.replace(/@\w+\s*/g, '').trim();
       // If message is now empty after removing mentions, ignore it
       if (!text) return;
@@ -352,6 +352,8 @@ export class TelegramUpdate {
 
     if (await this.handleVoucherSearchInput(telegramId, text, ctx)) return;
     if (await this.handleRejectionInput(telegramId, text, ctx)) return;
+    if (await this.handleFilterQuery(telegramId, text, ctx, isGroup && wasMentioned))
+      return;
     await this.handleWithDispatch(telegramId, text, ctx);
   }
 
@@ -599,6 +601,354 @@ export class TelegramUpdate {
     }
 
     return true;
+  }
+
+  @Action(/^filter_type:/)
+  async onFilterType(@Ctx() ctx: Context): Promise<void> {
+    const telegramId = String(ctx.from?.id);
+    const voucherType = (ctx.callbackQuery as any).data.replace('filter_type:', '');
+
+    const pending = this.telegramService.getPendingFilterQuery(telegramId);
+    if (!pending) {
+      await ctx.answerCbQuery('❌ Phiên làm việc hết hạn');
+      return;
+    }
+
+    this.telegramService.setPendingFilterQuery(telegramId, {
+      ...pending,
+      voucherType: voucherType === 'all' ? undefined : voucherType,
+      step: 'status',
+    });
+
+    await ctx.answerCbQuery();
+    await this.showStatusFilter(ctx, telegramId, pending.erpAccessToken);
+  }
+
+  @Action(/^filter_status:/)
+  async onFilterStatus(@Ctx() ctx: Context): Promise<void> {
+    const telegramId = String(ctx.from?.id);
+    const status = (ctx.callbackQuery as any).data.replace('filter_status:', '');
+
+    const pending = this.telegramService.getPendingFilterQuery(telegramId);
+    if (!pending) {
+      await ctx.answerCbQuery('❌ Phiên làm việc hết hạn');
+      return;
+    }
+
+    this.telegramService.setPendingFilterQuery(telegramId, {
+      ...pending,
+      status: status === 'all' ? undefined : status,
+      step: 'date',
+    });
+
+    await ctx.answerCbQuery();
+    await this.showDateFilter(ctx, telegramId, pending.erpAccessToken);
+  }
+
+  @Action(/^filter_date:/)
+  async onFilterDate(@Ctx() ctx: Context): Promise<void> {
+    const telegramId = String(ctx.from?.id);
+    const dateRange = (ctx.callbackQuery as any).data.replace('filter_date:', '');
+
+    const pending = this.telegramService.getPendingFilterQuery(telegramId);
+    if (!pending) {
+      await ctx.answerCbQuery('❌ Phiên làm việc hết hạn');
+      return;
+    }
+
+    this.telegramService.setPendingFilterQuery(telegramId, {
+      ...pending,
+      dateRange: dateRange === 'all' ? undefined : dateRange,
+      step: 'confirm',
+    });
+
+    await ctx.answerCbQuery();
+    await this.showConfirmFilter(ctx, telegramId, pending.erpAccessToken);
+  }
+
+  @Action(/^filter_confirm:/)
+  async onFilterConfirm(@Ctx() ctx: Context): Promise<void> {
+    const telegramId = String(ctx.from?.id);
+    const action = (ctx.callbackQuery as any).data.replace('filter_confirm:', '');
+
+    const pending = this.telegramService.getPendingFilterQuery(telegramId);
+    if (!pending) {
+      await ctx.answerCbQuery('❌ Phiên làm việc hết hạn');
+      return;
+    }
+
+    if (action === 'cancel') {
+      this.telegramService.clearPendingFilterQuery(telegramId);
+      await ctx.answerCbQuery();
+      await ctx.reply('❌ Đã hủy tìm kiếm');
+      return;
+    }
+
+    await ctx.answerCbQuery('🔍 Đang tìm kiếm...');
+
+    try {
+      // Build search params from filters
+      const params: VoucherSearchParams = {
+        page: 1,
+        limit: 10,
+      };
+
+      if (pending.voucherType && pending.voucherType !== 'all') {
+        params.voucherType = pending.voucherType;
+      }
+
+      if (pending.status && pending.status !== 'all') {
+        params.status = pending.status;
+      }
+
+      const result = await this.telegramService.searchVouchers(
+        params,
+        pending.erpAccessToken,
+      );
+
+      this.telegramService.clearPendingFilterQuery(telegramId);
+
+      if (result.data.length === 0) {
+        await ctx.reply('📭 Không tìm thấy phiếu nào phù hợp với bộ lọc của bạn.');
+        return;
+      }
+
+      const message =
+        this.telegramService.buildVoucherSearchResultMessage(result);
+      await ctx.reply(message, { parse_mode: 'Markdown' });
+    } catch (error) {
+      this.logger.error(`Filter search failed: ${error.message}`);
+      this.telegramService.clearPendingFilterQuery(telegramId);
+      await ctx.reply('❌ Có lỗi xảy ra khi tìm kiếm, vui lòng thử lại.');
+    }
+  }
+
+  private async handleFilterQuery(
+    telegramId: string,
+    text: string,
+    ctx: Context,
+    wasMentionedInGroup: boolean,
+  ): Promise<boolean> {
+    const isGroup = ctx.chat?.type === 'group' || ctx.chat?.type === 'supergroup';
+    const pending = this.telegramService.getPendingFilterQuery(telegramId);
+
+    // If there's a pending filter query, continue with that flow
+    if (pending) {
+      if (pending.step === 'type') {
+        await this.showTypeFilter(ctx, telegramId, pending.erpAccessToken);
+        return true;
+      }
+      return false;
+    }
+
+    // In groups with mention, start filter flow
+    if (isGroup && wasMentionedInGroup) {
+      let erpAccessToken: string | undefined = undefined;
+
+      if (ctx.chat?.id) {
+        const groupId = String(ctx.chat.id);
+        erpAccessToken = this.telegramService.getGroupErpToken(groupId);
+
+        if (!erpAccessToken) {
+          const userLink =
+            await this.telegramService.getUserLinkByTelegramId(telegramId);
+          erpAccessToken = (userLink?.erpAccessToken as string) || undefined;
+        }
+      }
+
+      if (
+        !erpAccessToken ||
+        this.telegramService.isTokenExpired(erpAccessToken)
+      ) {
+        await ctx.reply(
+          '⚠️ Token ERP chưa được thiết lập hoặc đã hết hạn.\nVui lòng yêu cầu ai đó kết nối ERP qua lệnh: `/connect_erp <token>`',
+        );
+        return true;
+      }
+
+      // Start filter query flow
+      this.telegramService.setPendingFilterQuery(telegramId, {
+        erpAccessToken,
+        initialQuery: text,
+        step: 'type',
+      });
+
+      await this.showTypeFilter(ctx, telegramId, erpAccessToken);
+      return true;
+    }
+
+    return false;
+  }
+
+  private async showTypeFilter(
+    ctx: Context,
+    _telegramId: string,
+    _erpAccessToken: string,
+  ): Promise<void> {
+    await ctx.reply(
+      '🔎 *Chọn loại phiếu:*',
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: '💰 Phiếu Chi',
+                callback_data: 'filter_type:PAYMENT',
+              },
+              {
+                text: '📥 Phiếu Thu',
+                callback_data: 'filter_type:RECEIPT',
+              },
+            ],
+            [
+              {
+                text: '📋 Tất cả loại',
+                callback_data: 'filter_type:all',
+              },
+            ],
+          ],
+        },
+      },
+    );
+  }
+
+  private async showStatusFilter(
+    ctx: Context,
+    _telegramId: string,
+    _erpAccessToken: string,
+  ): Promise<void> {
+    await ctx.reply(
+      '📊 *Chọn trạng thái:*',
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: '⏳ Chờ duyệt',
+                callback_data: 'filter_status:PENDING',
+              },
+              {
+                text: '✅ Đã duyệt',
+                callback_data: 'filter_status:APPROVED',
+              },
+            ],
+            [
+              {
+                text: '❌ Từ chối',
+                callback_data: 'filter_status:REJECTED',
+              },
+              {
+                text: '📝 Bản thảo',
+                callback_data: 'filter_status:DRAFT',
+              },
+            ],
+            [
+              {
+                text: '📋 Tất cả trạng thái',
+                callback_data: 'filter_status:all',
+              },
+            ],
+          ],
+        },
+      },
+    );
+  }
+
+  private async showDateFilter(
+    ctx: Context,
+    _telegramId: string,
+    _erpAccessToken: string,
+  ): Promise<void> {
+    await ctx.reply(
+      '📅 *Chọn khoảng thời gian:*',
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: '📆 Hôm nay',
+                callback_data: 'filter_date:today',
+              },
+              {
+                text: '📊 Tuần này',
+                callback_data: 'filter_date:week',
+              },
+            ],
+            [
+              {
+                text: '📈 Tháng này',
+                callback_data: 'filter_date:month',
+              },
+              {
+                text: '🔢 Quý này',
+                callback_data: 'filter_date:quarter',
+              },
+            ],
+            [
+              {
+                text: '📅 Tất cả thời gian',
+                callback_data: 'filter_date:all',
+              },
+            ],
+          ],
+        },
+      },
+    );
+  }
+
+  private async showConfirmFilter(
+    ctx: Context,
+    telegramId: string,
+    _erpAccessToken: string,
+  ): Promise<void> {
+    const pending = this.telegramService.getPendingFilterQuery(telegramId);
+    if (!pending) return;
+
+    let summary = '📋 *Tóm tắt bộ lọc:*\n\n';
+
+    const typeMap: Record<string, string> = {
+      PAYMENT: '💰 Phiếu Chi',
+      RECEIPT: '📥 Phiếu Thu',
+    };
+
+    const statusMap: Record<string, string> = {
+      PENDING: '⏳ Chờ duyệt',
+      APPROVED: '✅ Đã duyệt',
+      REJECTED: '❌ Từ chối',
+      DRAFT: '📝 Bản thảo',
+    };
+
+    const dateMap: Record<string, string> = {
+      today: '📆 Hôm nay',
+      week: '📊 Tuần này',
+      month: '📈 Tháng này',
+      quarter: '🔢 Quý này',
+    };
+
+    summary += `📌 *Loại:* ${pending.voucherType ? typeMap[pending.voucherType] || pending.voucherType : 'Tất cả'}\n`;
+    summary += `📊 *Trạng thái:* ${pending.status ? statusMap[pending.status] || pending.status : 'Tất cả'}\n`;
+    summary += `📅 *Thời gian:* ${pending.dateRange ? dateMap[pending.dateRange] || pending.dateRange : 'Tất cả'}\n`;
+
+    await ctx.reply(summary, {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: '🔍 Tìm kiếm',
+              callback_data: 'filter_confirm:search',
+            },
+            {
+              text: '❌ Hủy',
+              callback_data: 'filter_confirm:cancel',
+            },
+          ],
+        ],
+      },
+    });
   }
 
   @Hears(/hello/i)

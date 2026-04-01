@@ -20,6 +20,16 @@ interface PendingVoucherSearch {
   erpAccessToken: string;
 }
 
+interface PendingFilterQuery {
+  erpAccessToken: string;
+  initialQuery?: string;
+  voucherType?: string;
+  status?: string;
+  dateRange?: string;
+  amountRange?: string;
+  step: 'type' | 'status' | 'date' | 'amount' | 'confirm';
+}
+
 @Injectable()
 export class TelegramService {
   private readonly logger = new Logger(TelegramService.name);
@@ -30,6 +40,7 @@ export class TelegramService {
   >();
   private readonly lastSearchParams = new Map<string, VoucherSearchParams>();
   private readonly groupTokens = new Map<string, string>(); // groupId -> erpAccessToken
+  private readonly pendingFilterQueries = new Map<string, PendingFilterQuery>(); // userId -> filterQuery
 
   constructor(
     @InjectBot() private readonly bot: Telegraf,
@@ -522,6 +533,18 @@ export class TelegramService {
 
   clearPendingVoucherSearch(telegramId: string) {
     this.pendingVoucherSearches.delete(telegramId);
+  }
+
+  setPendingFilterQuery(telegramId: string, data: PendingFilterQuery) {
+    this.pendingFilterQueries.set(telegramId, data);
+  }
+
+  getPendingFilterQuery(telegramId: string): PendingFilterQuery | undefined {
+    return this.pendingFilterQueries.get(telegramId);
+  }
+
+  clearPendingFilterQuery(telegramId: string) {
+    this.pendingFilterQueries.delete(telegramId);
   }
 
   getLastSearchParams(telegramId: string): VoucherSearchParams | undefined {
