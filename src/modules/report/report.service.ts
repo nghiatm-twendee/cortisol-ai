@@ -40,12 +40,14 @@ const ROW_ACCOUNTS_OVERRIDE = new Map<number, string>([
   // THU: blank rows (no col A or B)
   [8, ''],    // Thu dự án (Fixed Price) — no account mapping
   [9, ''],    // Thu doanh thu môi giới — no account mapping
+  // Row 10 label-fallback would use +515.2,+515.3 but row 12 col A already includes 515.2 → override to avoid double-count
+  [10, '+515.3'],  // Thu đầu tư tài chính, tiết kiệm — 515.2 is covered by row 12
   // CHI: Lương dự án group (rows 18-22 are completely blank)
   [18, '+334.1'],              // Lương NV nội bộ (dự án)
   [19, '+334.2'],              // Lương NV thuê ngoài (freelancer)
   [20, '+331'],                // Lương NV vendor
   [21, '+6421-17'],            // Chi phí đào tạo nhân lực
-  [22, '+154'],                // CP công tác, sự kiện team DA
+  [22, ''],                    // CP công tác, sự kiện team DA — TK 154.x tính ở Commission Sales (row 43)
   // CHI: Quản lý văn phòng (row 24 has note text, 25-27 blank)
   [24, '+242'],                // Chi phí thuê nhà
   [25, '+6422.2'],             // Điện/Nước/Dịch vụ VP
@@ -61,12 +63,17 @@ const ROW_ACCOUNTS_OVERRIDE = new Map<number, string>([
   [35, '+334.3,+6422.6'],      // Lương bộ phận Kế toán (was only 6422.6)
   [36, '+6422.7'],             // CP xử lý thuế, kế toán
   // CHI: Sales (row 38 partial)
-  [38, '+334.6,+6421.3'],      // Lương NV Sales (was only 6421.3)
+  [38, '+334.6,+6421.3'],         // Lương NV Sales (334.6 = BD)
+  // CHI: Marketing (row 46 — 334.7 = Lương MKT nội bộ)
+  [46, '+334.7,+6421.8'],         // Lương MKT nội bộ + công tác
   // CHI: rows with Date objects (ExcelJS parsed account codes like "6422-10" as dates)
   [48, ''],   // CP hạ tầng, công cụ Marketing — no account data
   [50, ''],   // CP Google Workspace — no account data
   [51, ''],   // CP Cloud Server — no account data
-  [52, ''],   // Mua sắm máy móc — no account data
+  [52, '+6421-11,+2411'],  // Hạ tầng IT + mua sắm tài sản
+  // CHI: Chi phí khác (row 63 = col A: 811, row 65 blank)
+  [63, '+811,+6422.4,+6421-19'],  // Chi phí khác + 6421-19
+  [65, '+6423,+334.8'],           // CP khác + 334.8
 ]);
 
 const CASHFLOW_TEMPLATE: CfRow[] = [
@@ -388,187 +395,96 @@ export class ReportService implements OnModuleInit {
     // Jan → col 7 (G), Feb → col 9 (I), Mar → col 11 (K), ...
     const dataCol = 7 + (month - 1) * 2;
 
-    // Build yearly tkMap from all months in DB
-    const allEntries = await this.prisma.ledgerEntry.findMany({ where: { year } });
-    const yearTkMap = new Map<string, TkEntry>();
-    for (const e of allEntries) {
-      const cur = yearTkMap.get(e.tkDuong) ?? { no: 0, co: 0 };
-      yearTkMap.set(e.tkDuong, { no: cur.no + e.no, co: cur.co + e.co });
-    }
-
     // Build label→CfRow map for fallback when col A is missing from the Excel template
     const labelToCfRow = new Map<string, CfRow>();
     for (const cfRow of CASHFLOW_TEMPLATE) {
       labelToCfRow.set(cfRow.label, cfRow);
     }
 
-    // ── Pass 1: compute values for each data row ──────────────────────────
-    // rowMonth[rn] = monthly value, rowYear[rn] = yearly value
-    const rowMonth = new Map<number, number>();
-    const rowYear = new Map<number, number>();
-
-    // groupSums[section][group] = { month, year }
-    const groupSums = new Map<string, { month: number; year: number }>();
-    const sectionSums = new Map<'THU' | 'CHI', { month: number; year: number }>();
-
+    // ── Compute monthly value for each data row ───────────────────────────
+    const rowValues = new Map<number, number>(); // rn → value
     let section: 'THU' | 'CHI' | null = null;
-    let currentGroup: string | null = null;
-
-    const accumulate = (rn: number, sec: 'THU' | 'CHI', grp: string | null, mVal: number, yVal: number) => {
-      rowMonth.set(rn, mVal);
-      rowYear.set(rn, yVal);
-      const grpKey = `${sec}:${grp ?? '__none__'}`;
-      const g = groupSums.get(grpKey) ?? { month: 0, year: 0 };
-      groupSums.set(grpKey, { month: g.month + mVal, year: g.year + yVal });
-      const s = sectionSums.get(sec) ?? { month: 0, year: 0 };
-      sectionSums.set(sec, { month: s.month + mVal, year: s.year + yVal });
-    };
 
     sheet.eachRow((row, rn) => {
       const rawA = row.getCell(1).value;
       const colB = String(row.getCell(2).value ?? '').trim();
       const colBUp = colB.toUpperCase();
 
-      if (colBUp === 'THU') { section = 'THU'; currentGroup = null; return; }
-      if (colBUp === 'CHI') { section = 'CHI'; currentGroup = null; return; }
+      if (colBUp === 'THU') { section = 'THU'; return; }
+      if (colBUp === 'CHI') { section = 'CHI'; return; }
       if (!section) return;
 
-      // Row-level override — handles blank, partial, and corrupt col A rows
-      const overrideAccounts = ROW_ACCOUNTS_OVERRIDE.get(rn);
-      if (overrideAccounts !== undefined) {
-        const mVal = this.computeValue(overrideAccounts, section, tkMap);
-        const yVal = this.computeValue(overrideAccounts, section, yearTkMap);
-        accumulate(rn, section, currentGroup, mVal, yVal);
+      // Row-level override (blank/partial/corrupt col A)
+      const override = ROW_ACCOUNTS_OVERRIDE.get(rn);
+      if (override !== undefined) {
+        rowValues.set(rn, this.computeValue(override, section, tkMap));
         return;
       }
 
-      // Col A is empty — group header or (rare) label-fallback data row
+      // Col A empty + col B label: check if data row (via label fallback) or group header
       if ((rawA === null || rawA === undefined || rawA === '') && colB) {
         const fallback = labelToCfRow.get(colB);
-        if (fallback && fallback.section === section) {
-          // Data row matched by label
-          const mVal = this.computeValue(fallback.accounts, section, tkMap);
-          const yVal = this.computeValue(fallback.accounts, section, yearTkMap);
-          accumulate(rn, section, currentGroup, mVal, yVal);
-        } else {
-          // Group header
-          currentGroup = colB;
+        if (fallback && fallback.section === section && fallback.accounts) {
+          rowValues.set(rn, this.computeValue(fallback.accounts, section, tkMap));
         }
         return;
       }
       if (rawA === null || rawA === undefined || rawA === '') return;
 
       // Data row with account code in col A
-      let codeStr: string;
-      if (rawA instanceof Date) {
-        codeStr = `${rawA.getUTCFullYear()}-${rawA.getUTCMonth() + 1}`;
-      } else {
-        codeStr = String(rawA).trim();
-        if (!codeStr) return;
-      }
+      const codeStr = rawA instanceof Date
+        ? `${rawA.getUTCFullYear()}-${rawA.getUTCMonth() + 1}`
+        : String(rawA).trim();
+      if (!codeStr) return;
 
-      // A data row with col B label is a standalone item (not a sub-item of current group)
-      if (colB) currentGroup = null;
-
-      const mVal = this.computeFromCode(codeStr, section, tkMap);
-      const yVal = this.computeFromCode(codeStr, section, yearTkMap);
-      accumulate(rn, section, currentGroup, mVal, yVal);
+      rowValues.set(rn, this.computeFromCode(codeStr, section, tkMap));
     });
 
-    const thuMonth = sectionSums.get('THU')?.month ?? 0;
-    const chiMonth = sectionSums.get('CHI')?.month ?? 0;
-    const thuYear = sectionSums.get('THU')?.year ?? 0;
-    const chiYear = sectionSums.get('CHI')?.year ?? 0;
-    const pctCol = dataCol - 1; // e.g. col 6 (F) for Jan
+    // ── Fill ONLY the data column for this month ──────────────────────────
+    // All other columns (TỔNG, %, LÃI/LỖ, CUỐI KỲ, group subtotals) are
+    // formula-driven and will auto-calculate when the user opens the file.
+    for (const [rn, value] of rowValues) {
+      sheet.getRow(rn).getCell(dataCol).value = value || null;
+    }
 
-    const fillRow = (row: ExcelJS.Row, mVal: number, yVal: number) => {
-      row.getCell(dataCol).value = mVal || null;
-      row.getCell(5).value = yVal || null;
-      row.getCell(pctCol).value = thuMonth > 0 ? mVal / thuMonth : null;
-      row.getCell(4).value = thuYear > 0 ? yVal / thuYear : null;
-    };
-
-    // ── Pass 2: fill cells ─────────────────────────────────────────────────
-    section = null;
-    currentGroup = null;
-    let laiLoRow: ExcelJS.Row | null = null;
-    let dauKyRow: ExcelJS.Row | null = null;
-    let cuoiKyRow: ExcelJS.Row | null = null;
+    // ── Fix shared formulas so ExcelJS can write without errors ──────────
+    // ExcelJS can't round-trip shared formulas. Strategy:
+    //   - Master cells (formula + ref): keep formula, strip sharing metadata
+    //   - Clone cells (sharedFormula): convert to adjusted individual formula
+    const masterFormulas = new Map<string, { formula: string; masterRow: number; masterCol: number }>();
 
     sheet.eachRow((row, rn) => {
-      const rawA = row.getCell(1).value;
-      const colB = String(row.getCell(2).value ?? '').trim();
-      const colBUp = colB.toUpperCase();
-
-      // Track special rows
-      if (colBUp === 'LÃI/LỖ') { laiLoRow = row; return; }
-      if (colBUp === 'ĐẦU KỲ') { dauKyRow = row; return; }
-      if (colBUp.includes('KỲ') && colBUp.includes('CU')) { cuoiKyRow = row; return; }
-
-      if (colBUp === 'THU') {
-        section = 'THU'; currentGroup = null;
-        fillRow(row, thuMonth, thuYear);
-        return;
-      }
-      if (colBUp === 'CHI') {
-        section = 'CHI'; currentGroup = null;
-        fillRow(row, chiMonth, chiYear);
-        return;
-      }
-      if (!section) return;
-
-      // Row-level override rows are always data rows — fill directly
-      if (ROW_ACCOUNTS_OVERRIDE.has(rn)) {
-        fillRow(row, rowMonth.get(rn) ?? 0, rowYear.get(rn) ?? 0);
-        return;
-      }
-
-      // Col A is empty — group header or label-fallback data row
-      if ((rawA === null || rawA === undefined || rawA === '') && colB) {
-        const fallback = labelToCfRow.get(colB);
-        if (fallback && fallback.section === section) {
-          fillRow(row, rowMonth.get(rn) ?? 0, rowYear.get(rn) ?? 0);
-        } else {
-          // Group header row — fill group total
-          currentGroup = colB;
-          const g = groupSums.get(`${section}:${currentGroup}`);
-          if (g) fillRow(row, g.month, g.year);
-        }
-        return;
-      }
-      if (rawA === null || rawA === undefined || rawA === '') return;
-
-      // Data row with account code
-      fillRow(row, rowMonth.get(rn) ?? 0, rowYear.get(rn) ?? 0);
-    });
-
-    // Fill lãi/lỗ row
-    if (laiLoRow) {
-      (laiLoRow as ExcelJS.Row).getCell(dataCol).value = (thuMonth - chiMonth) || null;
-      (laiLoRow as ExcelJS.Row).getCell(5).value = (thuYear - chiYear) || null;
-    }
-
-    // Fill CUỐI KỲ row: ĐẦU KỲ + THU - CHI
-    if (cuoiKyRow && dauKyRow) {
-      const dauKy = Number((dauKyRow as ExcelJS.Row).getCell(dataCol).value ?? 0);
-      (cuoiKyRow as ExcelJS.Row).getCell(dataCol).value = dauKy + thuMonth - chiMonth || null;
-      const dauKyYear = Number((dauKyRow as ExcelJS.Row).getCell(5).value ?? 0);
-      (cuoiKyRow as ExcelJS.Row).getCell(5).value = dauKyYear + thuYear - chiYear || null;
-    }
-
-    // ExcelJS can't round-trip shared formulas — convert all formula/sharedFormula cells
-    // to their cached result values before writing to avoid corruption
-    sheet.eachRow((row) => {
       row.eachCell({ includeEmpty: false }, (cell) => {
         const v = cell.value;
-        if (v && typeof v === 'object') {
-          const obj = v as unknown as Record<string, unknown>;
-          const isFormula = 'formula' in obj || 'sharedFormula' in obj;
-          if (isFormula) {
-            const result = obj['result'];
-            const isError = result && typeof result === 'object' && 'error' in (result as object);
-            cell.value = (isError || result === undefined) ? null : (result as ExcelJS.CellValue);
-          }
+        if (!v || typeof v !== 'object') return;
+        const obj = v as unknown as Record<string, unknown>;
+        if ('formula' in obj && 'ref' in obj) {
+          masterFormulas.set(cell.address, {
+            formula: obj['formula'] as string,
+            masterRow: rn,
+            masterCol: Number(cell.col),
+          });
+          cell.value = { formula: obj['formula'] as string } as ExcelJS.CellValue;
+        }
+      });
+    });
+
+    sheet.eachRow((row, rn) => {
+      row.eachCell({ includeEmpty: false }, (cell) => {
+        const v = cell.value;
+        if (!v || typeof v !== 'object') return;
+        const obj = v as unknown as Record<string, unknown>;
+        if (!('sharedFormula' in obj)) return;
+
+        const master = masterFormulas.get(obj['sharedFormula'] as string);
+        if (master) {
+          const adjusted = this.adjustFormula(master.formula, rn - master.masterRow, Number(cell.col) - master.masterCol);
+          cell.value = { formula: adjusted } as ExcelJS.CellValue;
+        } else {
+          // Master not found — fall back to cached result
+          const res = obj['result'];
+          const isError = res && typeof res === 'object' && 'error' in (res as object);
+          cell.value = (isError || res === undefined) ? null : (res as ExcelJS.CellValue);
         }
       });
     });
@@ -605,6 +521,31 @@ export class ReportService implements OnModuleInit {
     }
 
     return Math.max(0, total);
+  }
+
+  // ─── Formula helpers ──────────────────────────────────────────────────────
+
+  // Adjust a shared formula for a clone cell by offsetting relative cell references.
+  // Absolute references ($A$1) are not moved; relative ones (A1) are shifted.
+  private adjustFormula(formula: string, rowOffset: number, colOffset: number): string {
+    return formula.replace(/(\$?)([A-Z]{1,3})(\$?)(\d+)/g, (_m, absCol, col, absRow, rowStr) => {
+      const newCol = absCol ? col : this.shiftCol(col, colOffset);
+      const newRow = absRow ? rowStr : String(parseInt(rowStr) + rowOffset);
+      return `${absCol}${newCol}${absRow}${newRow}`;
+    });
+  }
+
+  private shiftCol(col: string, offset: number): string {
+    const n = col.split('').reduce((acc, c) => acc * 26 + c.charCodeAt(0) - 64, 0);
+    const newN = n + offset;
+    let result = '';
+    let rem = newN;
+    while (rem > 0) {
+      const mod = (rem - 1) % 26;
+      result = String.fromCharCode(65 + mod) + result;
+      rem = Math.floor((rem - 1) / 26);
+    }
+    return result;
   }
 
   // ─── AI query ─────────────────────────────────────────────────────────────

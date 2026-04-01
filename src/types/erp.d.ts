@@ -133,7 +133,8 @@ export interface ErpTimeApplication {
 // ─── Employee profiles ────────────────────────────────────────────────────
 
 export interface ErpEmployeeProfile {
-  id: string; // employee_profiles.id
+  id: string;     // employee_profiles.id (used as employeeId in time_applications)
+  userId: string; // users.id (used as UserLink.userId)
   fullName: string;
   employeeCode: string;
   hireDate: string; // ISO timestamp = joinDate in DB
@@ -159,8 +160,10 @@ export interface ErpHoliday {
 
 export interface ErpUserLink {
   id: string;
-  userId: string;
-  externalSystem: 'JIRA' | 'GOOGLE_CALENDAR' | 'PORTAL_OUTSOURCING';
-  externalId: string;
-  user: ErpUser;
+  userId: string;           // ERP users.id
+  externalSystem: 'JIRA' | 'GOOGLE_CALENDAR' | 'PORTAL_OUTSOURCING' | 'TELEGRAM';
+  externalUserId: string;   // Jira accountId (for JIRA system)
+  externalUsername: string; // Jira displayName
+  active: boolean;
+  user: ErpUser & { firstName?: string; lastName?: string };
 }

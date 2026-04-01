@@ -6,6 +6,7 @@ import { Telegraf } from 'telegraf';
 import { HttpService } from '../http/http.service';
 import { PrismaService } from 'src/prisma/prisma.service';
 import { buildVoucherMessage } from 'src/lib/voucher';
+import type { ListPaymentVoucherResponse } from 'src/types/erp';
 
 @Injectable()
 export class TelegramService {

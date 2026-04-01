@@ -8,12 +8,13 @@ import {
   ErpTimeApplication,
   ErpEmployeeProfile,
   ErpHoliday,
+  ErpUserLink,
 } from 'src/types/erp';
 
 /**
  * Leave types that mean the employee is NOT working → reduce standard hours.
- * Remote types (REMOTE_UNLIMITED, REMOTE_WOMAN, REMOTE_WIFE_BIRTH) are excluded
- * because the employee is still working, just from home.
+ * Remote types (REMOTE_UNLIMITED, REMOTE_WOMAN, etc.) are excluded because
+ * the employee is still working, just from home.
  */
 const LEAVE_TYPES_NOT_WORKING = new Set([
   'ANNUAL_LEAVE',
@@ -61,6 +62,39 @@ export class JiraService {
     }
   }
 
+  /**
+   * Fetch all active JIRA user-links and build maps:
+   *   accountToUserId: jiraAccountId → ERP userId
+   *   userIdToName:    ERP userId → Jira displayName (for reporting)
+   */
+  async getJiraUserLinks(): Promise<{
+    accountToUserId: Map<string, string>;
+    userIdToName: Map<string, string>;
+  }> {
+    try {
+      const links = await this.httpService.get<ErpUserLink[]>(
+        '/user-links/system/JIRA',
+      );
+
+      const accountToUserId = new Map<string, string>();
+      const userIdToName = new Map<string, string>();
+
+      for (const link of links) {
+        if (!link.active) continue;
+        accountToUserId.set(link.externalUserId, link.userId);
+        const name =
+          link.externalUsername ||
+          `${link.user?.firstName ?? ''} ${link.user?.lastName ?? ''}`.trim();
+        userIdToName.set(link.userId, name);
+      }
+
+      return { accountToUserId, userIdToName };
+    } catch (error) {
+      this.logger.error(`Failed to fetch Jira user-links: ${error.message}`);
+      return { accountToUserId: new Map(), userIdToName: new Map() };
+    }
+  }
+
   async getApprovedLeaves(
     startDate: string,
     endDate: string,
@@ -76,7 +110,6 @@ export class JiraService {
       const periodStart = new Date(startDate);
       const periodEnd = new Date(endDate);
       periodEnd.setHours(23, 59, 59, 999);
-      // Keep applications that have at least one leave date overlapping the period
       return all.filter((app) =>
         app.leaveDate?.some((ld) => {
           const ldStart = new Date(ld.startTime);
@@ -112,7 +145,7 @@ export class JiraService {
     try {
       const resp = await this.httpService.get<{
         data: ErpHoliday[];
-        total: number;
+        meta?: object;
       }>('/holiday-config/holidays', {
         params: { fromDate: startDate, toDate: endDate, limit: 50 },
       });
@@ -151,19 +184,18 @@ export class JiraService {
 
   private calcLeaveHoursInPeriod(
     leaves: ErpTimeApplication[],
-    employeeId: string,
+    employeeProfileId: string, // employee_profiles.id = time_applications.employeeId
     periodStart: Date,
     periodEnd: Date,
   ): number {
     let hours = 0;
     for (const app of leaves) {
-      if (app.employeeId !== employeeId) continue;
+      if (app.employeeId !== employeeProfileId) continue;
       if (!LEAVE_TYPES_NOT_WORKING.has(app.leaveType)) continue;
       for (const ld of app.leaveDate ?? []) {
         const ldStart = new Date(ld.startTime);
         const ldEnd = new Date(ld.endTime);
         if (ldStart <= periodEnd && ldEnd >= periodStart) {
-          // days is the pre-calculated fractional working days for this leave entry
           hours += ld.days * 8;
         }
       }
@@ -171,68 +203,88 @@ export class JiraService {
     return hours;
   }
 
-  // ─── Main violation check (called every Monday) ───────────────────────────
-
   private toDateStr(d: Date): string {
-    // Format YYYY-MM-DD in local time (avoid UTC shift from toISOString())
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, '0');
     const day = String(d.getDate()).padStart(2, '0');
     return `${y}-${m}-${day}`;
   }
 
-  async findViolations(): Promise<SelfLearningViolation[]> {
+  // ─── Main violation check ────────────────────────────────────────────────
+  // Called by cron every Monday (no args) or by test with explicit period.
+
+  async findViolations(overrideStart?: Date, overrideEnd?: Date): Promise<SelfLearningViolation[]> {
     const now = new Date();
 
-    // Cron runs on Monday — check period from start of month up to last Friday
-    const periodEnd = new Date(now);
-    periodEnd.setDate(now.getDate() - 3);
-    periodEnd.setHours(23, 59, 59, 999);
+    // Cron runs on Monday — check from start of month up to last Friday
+    const periodEnd = overrideEnd ?? (() => {
+      const d = new Date(now);
+      d.setDate(now.getDate() - 3);
+      d.setHours(23, 59, 59, 999);
+      return d;
+    })();
 
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-
+    const monthStart = overrideStart ?? new Date(now.getFullYear(), now.getMonth(), 1);
     const startStr = this.toDateStr(monthStart);
     const endStr = this.toDateStr(periodEnd);
 
-    this.logger.log(
-      `Checking self-learning violations: ${startStr} → ${endStr}`,
-    );
+    this.logger.log(`Checking violations: ${startStr} → ${endStr}`);
 
-    const [authorWorklogs, employees, approvedLeaves, holidays] =
+    const [authorWorklogs, employees, approvedLeaves, holidays, userLinks] =
       await Promise.all([
         this.getWorklogsByPeriod(startStr, endStr),
         this.getEmployeeProfiles(),
         this.getApprovedLeaves(startStr, endStr),
         this.getHolidaysInPeriod(startStr, endStr),
+        this.getJiraUserLinks(),
       ]);
 
-    // Map HR name → employee profile for joining with Jira author displayName
-    const employeeByName = new Map<string, ErpEmployeeProfile>();
+    const { accountToUserId } = userLinks;
+
+    // Build map: userId → employee profile (hireDate + profile id for leave matching)
+    const employeeByUserId = new Map<string, ErpEmployeeProfile>();
     for (const emp of employees) {
-      if (emp.fullName) employeeByName.set(emp.fullName, emp);
+      if (emp.userId) employeeByUserId.set(emp.userId, emp);
     }
 
     const holidayHours = holidays.length * 8;
 
-    // Jira API returns per-project-per-author → aggregate seconds by displayName
-    const secondsByAuthor = new Map<string, number>();
+    // Aggregate Jira seconds by accountId (API returns per-project rows for same author)
+    const secondsByAccountId = new Map<string, number>();
+    const displayNameByAccountId = new Map<string, string>();
     for (const entry of authorWorklogs) {
-      const key = entry.displayName;
-      secondsByAuthor.set(key, (secondsByAuthor.get(key) ?? 0) + entry.seconds);
+      secondsByAccountId.set(
+        entry.accountId,
+        (secondsByAccountId.get(entry.accountId) ?? 0) + entry.seconds,
+      );
+      if (!displayNameByAccountId.has(entry.accountId)) {
+        displayNameByAccountId.set(entry.accountId, entry.displayName);
+      }
     }
 
     const violations: SelfLearningViolation[] = [];
 
-    for (const [displayName, totalSeconds] of secondsByAuthor) {
-      const author = { displayName, seconds: totalSeconds };
-      const employee = employeeByName.get(displayName);
+    for (const [accountId, totalSeconds] of secondsByAccountId) {
+      const userId = accountToUserId.get(accountId);
+      if (!userId) {
+        this.logger.debug(
+          `No UserLink for Jira accountId ${accountId} (${displayNameByAccountId.get(accountId)}) — skipping`,
+        );
+        continue;
+      }
 
-      // Determine effective period start — respect mid-month join date
+      const employee = employeeByUserId.get(userId);
+      const displayName =
+        employee?.fullName ??
+        displayNameByAccountId.get(accountId) ??
+        accountId;
+
+      // Respect mid-month join date
       let periodStart = new Date(monthStart);
       if (employee?.hireDate) {
         const joinDate = new Date(employee.hireDate);
         joinDate.setHours(0, 0, 0, 0);
-        if (joinDate > periodEnd) continue; // joined after the period — skip
+        if (joinDate > periodEnd) continue;
         if (joinDate > monthStart) periodStart = joinDate;
       }
 
@@ -242,7 +294,7 @@ export class JiraService {
       if (employee) {
         const leaveHours = this.calcLeaveHoursInPeriod(
           approvedLeaves,
-          employee.id,
+          employee.id, // employee_profiles.id = time_applications.employeeId
           periodStart,
           periodEnd,
         );
@@ -251,7 +303,7 @@ export class JiraService {
 
       standardHours = Math.max(0, standardHours);
 
-      const loggedHours = author.seconds / 3600;
+      const loggedHours = totalSeconds / 3600;
       const selfLearning = standardHours - loggedHours;
 
       this.logger.debug(
