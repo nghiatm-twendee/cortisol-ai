@@ -25,7 +25,10 @@ export class HttpService implements OnModuleInit {
 
     // Inject token on every request
     this.nestHttpService.axiosRef.interceptors.request.use((cfg) => {
-      if (this.accessToken && !cfg.headers['Authorization']) {
+      const hasAuth = Object.keys(cfg.headers ?? {}).some(
+        (k) => k.toLowerCase() === 'authorization',
+      );
+      if (this.accessToken && !hasAuth) {
         cfg.headers['Authorization'] = `Bearer ${this.accessToken}`;
       }
       return cfg;
