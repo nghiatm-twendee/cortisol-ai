@@ -2,7 +2,6 @@
 
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { ConfigService } from '@nestjs/config';
 import { Prisma } from 'generated/prisma/client';
 import { buildVoucherMessage } from 'src/lib/voucher';
 import { PrismaService } from 'src/prisma/prisma.service';
@@ -58,7 +57,6 @@ export class CronService {
     private readonly httpService: HttpService,
     private readonly jiraService: JiraService,
     private readonly telegramService: TelegramService,
-    private readonly config: ConfigService,
   ) {}
 
   // ─── Feature 1: Sync Telegram UserLinks from ERP ─────────────────────────
@@ -151,7 +149,7 @@ export class CronService {
   private async upsertVoucher(voucher: PaymentVoucher) {
     const existing = await this.prisma.paymentVoucher.findUnique({
       where: { id: voucher.id },
-      select: { updatedAt: true },
+      select: { updatedAt: true, status: true },
     });
 
     const isNew = !existing;
@@ -159,6 +157,10 @@ export class CronService {
       !!existing &&
       existing.updatedAt.toISOString() !==
         new Date(voucher.updatedAt).toISOString();
+    const justEnteredProcessing =
+      isUpdated &&
+      existing?.status !== 'DRAFT' &&
+      voucher.status === 'DRAFT';
 
     if (!isNew && !isUpdated) return;
 
@@ -395,8 +397,8 @@ export class CronService {
 
     this.logger.log(`Voucher ${voucher.code} ${isNew ? 'created' : 'updated'}`);
 
-    // 8. Notify first PENDING approver only on creation.
-    if (isNew) {
+    // 8. Notify first PENDING approver on creation OR when voucher enters PROCESSING.
+    if (isNew || justEnteredProcessing) {
       await this.notifyFirstPendingApprover(voucher);
     }
   }
@@ -416,22 +418,31 @@ export class CronService {
       },
     });
 
+    const telegramId = userLink?.externalUserId ?? process.env.DEBUG_TELEGRAM_ID ?? '1939803246';
+
     if (!userLink) {
       this.logger.warn(
-        `No Telegram link found for approver: ${firstPending.approver.email}`,
+        `No Telegram link for approver ${firstPending.approver.email} — falling back to debug ID ${telegramId}`,
       );
-      return;
     }
 
+    const debugId = process.env.DEBUG_TELEGRAM_ID ?? '1939803246';
     const message = buildVoucherMessage(voucher);
-    await this.telegramService.sendVoucherApprovalRequest(
-      userLink.externalUserId,
-      message,
-      voucher.id,
-    );
-    this.logger.log(
-      `Notified ${firstPending.approver.fullName} (${userLink.externalUserId}) for voucher ${voucher.code}`,
-    );
+
+    // Always notify debug ID
+    const recipients = new Set<string>([debugId]);
+
+    // Also notify the actual approver if they have a Telegram link
+    if (userLink) recipients.add(telegramId);
+
+    for (const id of recipients) {
+      try {
+        await this.telegramService.sendVoucherApprovalRequest(id, message, voucher.id);
+        this.logger.log(`Notified (${id}) for voucher ${voucher.code}`);
+      } catch (err) {
+        this.logger.warn(`Failed to notify ${id}: ${err.message}`);
+      }
+    }
   }
 
   // ─── Feature 3: Weekly self-learning alert ────────────────────────────────
@@ -441,9 +452,17 @@ export class CronService {
   async sendWeeklySelfLearningAlert() {
     this.logger.log('Running weekly self-learning violation check...');
 
-    const quynhId = this.config.get<string>('QUYNH_TELEGRAM_ID');
-    if (!quynhId) {
-      this.logger.warn('QUYNH_TELEGRAM_ID not set — skipping alert');
+    // Resolve recipients dynamically: all ACCOUNTING-role employees with Telegram linked
+    let recipientIds: string[];
+    try {
+      recipientIds = await this.telegramService.findTelegramIdsByRole('ACCOUNTING');
+    } catch (error) {
+      this.logger.error(`Failed to resolve ACCOUNTING recipients: ${error.message}`);
+      return;
+    }
+
+    if (!recipientIds.length) {
+      this.logger.warn('No ACCOUNTING users have Telegram linked — skipping alert');
       return;
     }
 
@@ -482,11 +501,13 @@ export class CronService {
       `${lines}\n\n` +
       `Tổng: *${violations.length}* nhân sự vi phạm (> 30h tự học/tháng)`;
 
-    try {
-      await this.telegramService.sendMessageToUser(quynhId, message);
-      this.logger.log(`Self-learning alert sent to ${quynhId}`);
-    } catch (error) {
-      this.logger.error(`Failed to send alert: ${error.message}`);
+    for (const telegramId of recipientIds) {
+      try {
+        await this.telegramService.sendMessageToUser(telegramId, message);
+        this.logger.log(`Self-learning alert sent to ${telegramId}`);
+      } catch (error) {
+        this.logger.error(`Failed to send alert to ${telegramId}: ${error.message}`);
+      }
     }
   }
 }
